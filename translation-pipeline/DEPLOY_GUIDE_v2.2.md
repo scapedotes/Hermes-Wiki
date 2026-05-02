@@ -1,3 +1,6 @@
+The provided content is already in English. As requested, all markdown formatting, code blocks, and technical terms have been preserved, and the professional and technical tone maintained.
+
+```markdown
 # Translation Pipeline v2.2 - Deployment Package
 
 This package contains the fully upgraded translation pipeline.
@@ -19,3 +22,4 @@ This package contains the fully upgraded translation pipeline.
 ./deploy.sh
 ```
 Access at: http://localhost:8080
+```

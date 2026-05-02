@@ -1,5 +1,5 @@
 ---
-title: Model Tools 工具编排与调度架构
+title: Model Tools — Tool Orchestration and Scheduling Architecture
 created: 2026-04-08
 updated: 2026-04-08
 type: concept
@@ -7,72 +7,72 @@ tags: [architecture, module, component, tool, toolset]
 sources: [model_tools.py, tools/registry.py, toolsets.py]
 ---
 
-# Model Tools — 工具编排与调度架构
+# Model Tools — Tool Orchestration and Scheduling Architecture
 
-## 概述
+## Overview
 
-Model Tools 位于 `model_tools.py`（22KB/577行），是 Tool Registry 之上的**轻量编排层**。它负责触发工具发现、过滤工具集、处理异步桥接、执行函数调用分发。
+Model Tools, located at `model_tools.py` (22KB/577 lines), is a **lightweight orchestration layer** built on top of the Tool Registry. It is responsible for triggering tool discovery, filtering toolsets, handling asynchronous bridging, and dispatching function calls.
 
-核心理念：**model_tools.py 不再维护自己的数据结构——所有数据来自 Tool Registry。**
+Core Philosophy: **`model_tools.py` no longer maintains its own data structures — all data originates from the Tool Registry.**
 
-## 架构原理
+## Architectural Principles
 
-### 文件依赖链
+### File Dependency Chain
 
 ```
-tools/registry.py  (零外部依赖 — 被所有工具文件导入)
+tools/registry.py  (zero external dependencies — imported by all tool files)
        ↑
-tools/*.py  (每个文件在模块级别调用 registry.register())
+tools/*.py  (each file calls registry.register() at the module level)
        ↑
-model_tools.py  (导入 registry + 触发 _discover_tools())
+model_tools.py  (imports registry + triggers _discover_tools())
        ↑
 run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-### 公共 API（向后兼容）
+### Public API (Backward Compatible)
 
 ```python
-# 这些 API 签名从原始 2400 行版本保留，下游代码直接使用
+# These API signatures are preserved from the original 2400-line version for direct use by downstream code
 get_tool_definitions(enabled, disabled, quiet) → list
 handle_function_call(name, args, task_id, user_task) → str
-TOOL_TO_TOOLSET_MAP: dict          # 供 batch_runner.py 使用
-TOOLSET_REQUIREMENTS: dict         # 供 cli.py, doctor.py 使用
+TOOL_TO_TOOLSET_MAP: dict          # Used by batch_runner.py
+TOOLSET_REQUIREMENTS: dict         # Used by cli.py, doctor.py
 get_all_tool_names() → list
 get_available_toolsets() → dict
 check_tool_availability(quiet) → tuple
 ```
 
-## 核心组件
+## Core Components
 
-### 1. 异步桥接（_run_async）
+### 1. Asynchronous Bridge (`_run_async`)
 
-这是 model_tools.py 最重要的基础设施——**同步到异步转换的单一真相源**：
+This is the most critical infrastructure in `model_tools.py` — the **single source of truth for sync-to-async conversion**:
 
 ```python
 def _run_async(coro):
     """
-    三种运行路径:
+    Three execution paths:
     
-    1. 已有运行中的事件循环 (gateway/RL env)
-       → 启动独立线程 + asyncio.run()，避免冲突
+    1. Existing running event loop (gateway/RL env)
+       → Start a separate thread + asyncio.run() to avoid conflicts
     
-    2. 工作线程 (delegate_task 的 ThreadPoolExecutor)
-       → 使用线程级持久循环 (_get_worker_loop)
-       → 避免与主线程共享循环，同时防止 GC 关闭循环
+    2. Worker thread (ThreadPoolExecutor for delegate_task)
+       → Use a thread-level persistent loop (_get_worker_loop)
+       → Avoid sharing the loop with the main thread, while preventing GC from closing the loop
     
-    3. 主线程 (CLI 常规路径)
-       → 使用全局持久循环 (_get_tool_loop)
-       → 缓存的 httpx/AsyncOpenAI 客户端保持绑定到活跃循环
+    3. Main thread (CLI regular path)
+       → Use a global persistent loop (_get_tool_loop)
+       → Cached httpx/AsyncOpenAI clients remain bound to the active loop
     """
 ```
 
-**为什么不用 asyncio.run()**：`asyncio.run()` 创建循环、运行协程、然后**关闭**循环。但缓存的 httpx/AsyncOpenAI 客户端仍绑定到已关闭的循环，GC 时触发 `RuntimeError: Event loop is closed`。
+**Why not `asyncio.run()`**: `asyncio.run()` creates a loop, runs the coroutine, and then **closes** the loop. However, cached httpx/AsyncOpenAI clients remain bound to the closed loop, triggering `RuntimeError: Event loop is closed` during garbage collection.
 
-### 2. 工具发现（_discover_tools）
+### 2. Tool Discovery (`_discover_tools`)
 
 ```python
 def _discover_tools():
-    """导入所有工具模块，触发它们的 registry.register() 调用"""
+    """Imports all tool modules, triggering their registry.register() calls"""
     _modules = [
         "tools.web_tools",
         "tools.terminal_tool",
@@ -80,90 +80,90 @@ def _discover_tools():
         "tools.browser_tool",
         "tools.code_execution_tool",
         "tools.delegate_tool",
-        # ... 20 个工具模块
+        # ... 20 tool modules
     ]
     for mod_name in _modules:
         try:
             importlib.import_module(mod_name)
         except Exception:
-            pass  # 可选工具导入失败不影响其他工具
+            pass  # Optional tool import failures do not affect other tools
 
-# 注意：MCP 工具发现不在 _discover_tools() 的模块列表中，
-# 而是在 _discover_tools() 外部单独处理（约 lines 173-177）：
+# Note: MCP tool discovery is not in _discover_tools()'s module list,
+# but handled separately outside _discover_tools() (approx. lines 173-177):
 #   from tools.mcp_tool import discover_mcp_tools
 #   discover_mcp_tools()
 ```
 
-**三层发现机制**：
-1. **静态导入**：`_discover_tools()` 导入预定义模块列表
-2. **MCP 发现**：从外部 MCP 服务器动态发现工具
-3. **插件发现**：从用户/项目/pip 插件发现工具
+**Three-layer Discovery Mechanism**:
+1.  **Static Import**: `_discover_tools()` imports a predefined list of modules.
+2.  **MCP Discovery**: Dynamically discovers tools from an external MCP server.
+3.  **Plugin Discovery**: Discovers tools from user/project/pip plugins.
 
-### 3. 工具定义获取（get_tool_definitions）
+### 3. Getting Tool Definitions (`get_tool_definitions`)
 
 ```python
 def get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode):
     """
-    1. 根据 toolset 过滤确定要包含的工具名
-    2. 向 registry 请求 schema（只返回 check_fn 通过的工具）
-    3. 动态调整 execute_code schema（只列出可用的沙盒工具）
-    4. 动态调整 browser_navigate 描述（web 工具不可用时移除引用）
-    5. 记录 _last_resolved_tool_names 供 downstream 使用
+    1. Determine tool names to include based on toolset filtering
+    2. Request schemas from the registry (only returns tools whose check_fn passes)
+    3. Dynamically adjust execute_code schema (only lists available sandbox tools)
+    4. Dynamically adjust browser_navigate description (remove references if web tools are unavailable)
+    5. Record _last_resolved_tool_names for downstream use
     """
 ```
 
-**关键设计——动态 schema 调整**：
+**Key Design — Dynamic Schema Adjustment**:
 
 ```python
-# 问题: execute_code 的 schema 中列出所有可能的沙盒工具
-# 但如果 web_search 的 API key 没配置，模型看到 "web_search 可用"
-# 就会尝试调用不存在的工具 → hallucination
+# Problem: execute_code's schema lists all possible sandbox tools.
+# But if web_search's API key is not configured, the model sees "web_search available"
+# and tries to call a non-existent tool → hallucination.
 
-# 解决: 根据实际可用的工具重建 schema
+# Solution: Rebuild the schema based on actually available tools.
 if "execute_code" in available_tool_names:
     sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
     dynamic_schema = build_execute_code_schema(sandbox_enabled)
 ```
 
-同样的模式应用于 browser_navigate：
+The same pattern applies to `browser_navigate`:
 
 ```python
-# 当 web_search/web_extract 不可用时，从 browser_navigate 描述中移除
-# "prefer web_search or web_extract" 引用
+# When web_search/web_extract are unavailable, remove the
+# "prefer web_search or web_extract" reference from browser_navigate's description.
 if not {"web_search", "web_extract"} & available_tool_names:
     desc = desc.replace("For simple information retrieval, prefer web_search...", "")
 ```
 
-### 4. 参数类型强制（coerce_tool_args）
+### 4. Argument Type Coercion (`coerce_tool_args`)
 
 ```python
 def coerce_tool_args(tool_name, args):
     """
-    LLM 经常返回:
-    - 数字作为字符串: "42" 而非 42
-    - 布尔值作为字符串: "true" 而非 true
+    LLMs often return:
+    - Numbers as strings: "42" instead of 42
+    - Booleans as strings: "true" instead of true
     
-    对比 JSON Schema 并安全转换类型
+    Compare against JSON Schema and safely convert types.
     """
-    # 支持: integer, number, boolean, 联合类型 [integer, string]
-    # 安全: 转换失败保留原始值
+    # Supports: integer, number, boolean, union types [integer, string]
+    # Safety: Conversion failure preserves original value
 ```
 
-### 5. 函数调用分发（handle_function_call）
+### 5. Function Call Dispatch (`handle_function_call`)
 
 ```python
 def handle_function_call(function_name, function_args, task_id, ...):
     """
-    1. 参数类型强制 (coerce_tool_args)
-    2. 通知 read-loop tracker (重置 read_file 连续计数器)
-    3. 拦截 Agent 级工具 (todo, memory, session_search, delegate_task)
-    4. 触发 pre_tool_call 插件钩子
-    5. 分发到 registry.dispatch()
-    6. 触发 post_tool_call 插件钩子
+    1. Argument type coercion (coerce_tool_args)
+    2. Notify read-loop tracker (reset read_file consecutive counter)
+    3. Intercept Agent-level tools (todo, memory, session_search, delegate_task)
+    4. Trigger pre_tool_call plugin hook
+    5. Dispatch to registry.dispatch()
+    6. Trigger post_tool_call plugin hook
     """
 ```
 
-**Agent 级工具拦截**：
+**Agent-level Tool Interception**:
 
 ```python
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
@@ -172,9 +172,9 @@ if function_name in _AGENT_LOOP_TOOLS:
     return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 ```
 
-这些工具需要 Agent 级状态（TodoStore, MemoryStore 等），在 `run_agent.py` 中直接处理。
+These tools require Agent-level state (TodoStore, MemoryStore, etc.) and are handled directly in `run_agent.py`.
 
-### 6. 向后兼容映射
+### 6. Backward Compatibility Map
 
 ```python
 _LEGACY_TOOLSET_MAP = {
@@ -186,30 +186,31 @@ _LEGACY_TOOLSET_MAP = {
 }
 ```
 
-旧的 toolset 名称（如 `"web_tools"`）自动映射到新的工具名列表。
+Old toolset names (e.g., `"web_tools"`) are automatically mapped to new lists of tool names.
 
-## 设计优越性
+## Design Advantages
 
-### 从 2400 行到 577 行
+### From 2400 Lines to 577 Lines
 
-| 指标 | 重构前 | 重构后 |
-|---|---|---|
-| 代码行数 | 2400+ | 577 |
-| 数据结构 | 平行维护多个 dict | 全部委托给 Registry |
-| 可用性检查 | 分散在 model_tools.py | Registry 集中处理 |
-| 异步桥接 | 多处复制 | 单一 _run_async() |
-| 测试难度 | 难以 mock | Registry 可替换 |
+| Metric            | Before Refactoring | After Refactoring |
+| :---------------- | :----------------- | :---------------- |
+| Lines of Code     | 2400+              | 577               |
+| Data Structures   | Maintained multiple dicts in parallel | Entirely delegated to Registry |
+| Availability Check | Scattered throughout model_tools.py | Handled centrally by Registry |
+| Async Bridging    | Copied in multiple places | Single _run_async() |
+| Test Difficulty   | Difficult to mock  | Registry is swappable/mockable |
 
-### 动态 Schema 调整的优越性
+### Advantages of Dynamic Schema Adjustment
 
-传统的静态 schema 会导致模型看到不可用的工具引用。Model Tools 通过**运行时动态调整**确保：
-- execute_code 只列出当前可用的沙盒工具
-- browser_navigate 只在 web 工具可用时建议优先使用它们
-- 所有 cross-tool 引用都基于实际可用状态
+Traditional static schemas can lead to models referencing unavailable tools. Model Tools ensures, through **dynamic adjustment at runtime**:
+- `execute_code` only lists currently available sandbox tools.
+- `browser_navigate` only suggests prioritizing web tools when they are actually available.
+- All cross-tool references are based on actual availability.
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[tool-registry-architecture]] — 所有数据来自 Registry
-- [[toolsets-system]] — 工具集解析和验证通过 toolsets.py
-- [[large-tool-result-handling]] — execute_code schema 动态调整
-- [[mcp-and-plugins]] — MCP 和插件工具通过 discover 机制集成
+- [[tool-registry-architecture]] — All data originates from the Registry
+- [[toolsets-system]] — Toolset parsing and validation via `toolsets.py`
+- [[large-tool-result-handling]] — `execute_code` schema dynamically adjusted
+- [[mcp-and-plugins]] — MCP and plugin tools integrated via the discovery mechanism
+---

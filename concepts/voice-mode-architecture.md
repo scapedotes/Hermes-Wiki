@@ -1,5 +1,5 @@
 ---
-title: 语音模式架构
+title: Voice Mode Architecture
 created: 2026-04-10
 updated: 2026-04-18
 type: concept
@@ -7,103 +7,103 @@ tags: [voice, stt, tts, architecture]
 sources: [tools/voice_mode.py, tools/tts_tool.py, tools/transcription_tools.py, cli.py]
 ---
 
-# 语音模式架构
+# Voice Mode Architecture
 
-## 概述
+## Overview
 
-Hermes 支持 Push-to-talk 语音交互：用户按键录音 → STT 转文字 → LLM 处理 → TTS 语音播报回复。整个链路在 CLI 中完成，依赖可选的音频库。
+Hermes supports Push-to-talk voice interaction: users press a key to record → STT transcribes to text → LLM processes → TTS broadcasts the reply. The entire pipeline is completed within the CLI and relies on optional audio libraries.
 
-## 依赖
+## Dependencies
 
 ```bash
-pip install sounddevice numpy   # 或
+pip install sounddevice numpy   # Or
 pip install hermes-agent[voice]
 ```
 
-音频库**按需懒加载**，不装也不影响文本模式。在无音频设备的环境（SSH、Docker、WSL）中自动检测并禁用。
+Audio libraries are **lazily loaded on demand**; not installing them does not affect text mode. In environments without audio devices (SSH, Docker, WSL), they are automatically detected and disabled.
 
-## 流程
+## Workflow
 
 ```text
-用户按 Ctrl+B 开始录音
+User presses Ctrl+B to start recording
     ↓
-sounddevice 采集音频 → WAV 临时文件
+sounddevice captures audio → WAV temporary file
     ↓
-再按 Ctrl+B 停止录音
+Press Ctrl+B again to stop recording
     ↓
-STT 转文字（3 个 Provider 可选）:
-  - local: faster-whisper（本地，无需 API Key）
-  - groq: Whisper via Groq（免费额度）
+STT transcription (3 Providers available):
+  - local: faster-whisper (local, no API Key needed)
+  - groq: Whisper via Groq (free tier)
   - openai: Whisper via OpenAI
     ↓
-转录文本作为用户消息发送给 LLM
+Transcribed text sent to LLM as a user message
     ↓
-LLM 回复（自动注入简洁指令："respond concisely, 2-3 sentences max"）
+LLM replies (concise instruction automatically injected: "respond concisely, 2-3 sentences max")
     ↓
-TTS 语音播报（5 个 Provider 可选）:
-  - ElevenLabs（流式，边生成边播放）
+TTS voice broadcast (5 Providers available):
+  - ElevenLabs (streaming, plays as it's generated)
   - OpenAI TTS
   - Google TTS
-  - macOS say 命令
-  - NeuTTS（自托管）
+  - macOS say command
+  - NeuTTS (self-hosted)
 ```
 
-## STT 配置
+## STT Configuration
 
 ```yaml
 # config.yaml
 stt:
-  provider: local   # local | groq | openai（优先级：local > groq > openai）
-  model: base       # faster-whisper 模型大小（base ~150MB，首次自动下载）
+  provider: local   # local | groq | openai (priority: local > groq > openai)
+  model: base       # faster-whisper model size (base ~150MB, automatically downloaded on first use)
 ```
 
 ```bash
 # .env
-GROQ_API_KEY=...              # Groq Whisper（免费）
+GROQ_API_KEY=...              # Groq Whisper (free)
 VOICE_TOOLS_OPENAI_KEY=...    # OpenAI Whisper
 ```
 
-## TTS 配置
+## TTS Configuration
 
-TTS Provider 选择和语音设置通过 `tools/tts_tool.py` 管理，支持 ElevenLabs 的流式播报——LLM 生成一句就播一句，不用等完整回复。
+TTS Provider selection and voice settings are managed via `tools/tts_tool.py`, supporting ElevenLabs' streaming broadcast—the LLM generates a sentence, and it plays immediately, without waiting for the full reply.
 
-### 新增 TTS Provider（v0.10.0）
+### New TTS Providers (v0.10.0)
 
-| Provider | 来源 |
-|----------|------|
-| ElevenLabs | 原有 |
-| OpenAI | 原有 |
-| **Google Gemini TTS** | v0.10.0 新增，通过 Gemini API |
-| **xAI TTS** | v0.10.0 随 xAI Responses API 升级引入 |
-| **KittenTTS（本地）** | v2026.4.18+ 引入，本地 CPU 运行，无需 GPU 和 API key，默认模型 `KittenML/kitten-tts-nano-0.8-int8`（25MB），默认声音 `Jasper`，其他声音由 KittenTTS 包提供（25-80MB 模型范围） |
+| Provider | Source |
+|----------|--------|
+| ElevenLabs | Existing |
+| OpenAI | Existing |
+| **Google Gemini TTS** | New in v0.10.0, via Gemini API |
+| **xAI TTS** | Introduced with xAI Responses API upgrade in v0.10.0 |
+| **KittenTTS (Local)** | Introduced in v2026.4.18+, runs locally on CPU, no GPU or API key required. Default model `KittenML/kitten-tts-nano-0.8-int8` (25MB), default voice `Jasper`. Other voices provided by the KittenTTS package (25-80MB model range). |
 
-这些 provider 也可通过 Nous Tool Gateway 统一访问（无需自备 API key）。
+These providers can also be accessed uniformly through Nous Tool Gateway (no self-provided API key required).
 
-### STT Provider 扩展（v2026.4.18+）
+### STT Provider Extensions (v2026.4.18+)
 
-| Provider | 说明 |
-|----------|------|
-| Groq Whisper（免费） | 原有 |
-| OpenAI Whisper | 原有 |
-| Deepgram | 原有 |
-| **xAI Grok STT** | 新增，POST `/v1/stt`，支持 ITN（Inverse Text Normalization）+ 可选 diarization |
+| Provider | Description |
+|----------|-------------|
+| Groq Whisper (free) | Existing |
+| OpenAI Whisper | Existing |
+| Deepgram | Existing |
+| **xAI Grok STT** | New, POST `/v1/stt`, supports ITN (Inverse Text Normalization) + optional diarization |
 
-## 语音模式特殊行为
+## Voice Mode Special Behavior
 
-- LLM 收到语音输入时，系统自动注入前缀指令要求简短回复
-- 该前缀仅用于 API 调用，**不持久化到会话历史**（通过 `persist_user_message` 参数保存原始转录文本）
-- 持续语音模式下遇到持久错误（如 429）会自动停止，防止错误 → 录音 → 错误的死循环
+- When the LLM receives voice input, the system automatically injects a prefix instruction requesting a concise reply.
+- This prefix is only used for API calls and **is not persisted to the session history** (the original transcribed text is saved via the `persist_user_message` parameter).
+- In continuous voice mode, persistent errors (e.g., 429) will automatically stop the process to prevent an error → recording → error loop.
 
-## 相关页面
+## Related Pages
 
-- [[cli-architecture]] — CLI 中的语音模式集成
-- [[auxiliary-client-architecture]] — STT/TTS 使用 auxiliary 模型配置
+- [[cli-architecture]] — Voice mode integration in the CLI
+- [[auxiliary-client-architecture]] — STT/TTS using auxiliary model configuration
 
-## 关键源码
+## Key Source Files
 
-| 文件 | 职责 |
-|------|------|
-| `tools/voice_mode.py`（812 行）| 录音、STT 调度、音频播放 |
-| `tools/tts_tool.py`（983 行）| TTS Provider 路由、流式播报 |
-| `tools/transcription_tools.py` | STT Provider 统一接口 |
-| `cli.py` | Push-to-talk 键绑定（Ctrl+B） |
+| File | Responsibility |
+|------|----------------|
+| `tools/voice_mode.py` (812 lines) | Audio recording, STT orchestration, audio playback |
+| `tools/tts_tool.py` (983 lines) | TTS Provider routing, streaming broadcast |
+| `tools/transcription_tools.py` | Unified interface for STT Providers |
+| `cli.py` | Push-to-talk key binding (Ctrl+B) |

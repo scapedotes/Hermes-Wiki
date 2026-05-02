@@ -1,5 +1,5 @@
 ---
-title: Git Worktree 隔离
+title: Git Worktree Isolation
 created: 2026-04-10
 updated: 2026-04-10
 type: concept
@@ -7,71 +7,71 @@ tags: [git, worktree, isolation, parallel]
 sources: [cli.py, hermes_cli/main.py, cli-config.yaml.example]
 ---
 
-# Git Worktree 隔离
+# Git Worktree Isolation
 
-## 概述
+## Overview
 
-Hermes 支持通过 git worktree 实现**多个 agent 并行操作同一个仓库而不冲突**。每个 agent 会话在独立的 worktree 分支中工作，文件修改互不影响。
+Hermes supports **multiple agents operating on the same repository in parallel without conflicts** through Git worktrees. Each agent session operates within an independent worktree branch, ensuring file modifications do not affect one another.
 
-## 使用方式
+## Usage
 
 ```bash
-hermes -w              # 启动时创建隔离 worktree
-hermes --worktree      # 同上
+hermes -w              # Creates an isolated worktree on startup
+hermes --worktree      # Same as above
 ```
 
-或在 config.yaml 中全局开启：
+Alternatively, enable globally in `config.yaml`:
 ```yaml
-worktree: true         # 每次在 git 仓库中启动都自动创建 worktree
+worktree: true         # Automatically creates a worktree every time Hermes is started within a Git repository.
 ```
 
-## 工作原理
+## How it Works
 
 ```text
 hermes -w
     ↓
 _setup_worktree()
     ↓
-1. 检测当前目录是否在 git 仓库内（不在则报错）
-2. 在 .worktrees/ 下创建新 worktree（git worktree add）
-3. 创建分支 hermes/hermes-{8位随机ID}，基于 HEAD
-4. 自动将 .worktrees/ 添加到 .gitignore
-5. 复制 .worktreeinclude 中列出的文件（gitignored 但 agent 需要的）
-6. 切换 CWD 到 worktree 目录
+1. Checks if the current directory is within a Git repository (errors if not).
+2. Creates a new worktree under .worktrees/ (using git worktree add).
+3. Creates a branch named hermes/hermes-{8-digit-random-ID}, based on HEAD.
+4. Automatically adds .worktrees/ to .gitignore.
+5. Copies files listed in .worktreeinclude (which are gitignored but required by the agent).
+6. Changes the Current Working Directory (CWD) to the worktree directory.
     ↓
-agent 在隔离环境中工作
+Agent operates in the isolated environment.
     ↓
-会话结束 → _cleanup_worktree()
+Session ends → _cleanup_worktree()
     ↓
-删除 worktree 目录 + 分支（git worktree remove + git branch -D）
+Deletes the worktree directory and branch (using git worktree remove + git branch -D).
 ```
 
-## .worktreeinclude 文件
+## .worktreeinclude File
 
-某些文件被 .gitignore 忽略但 agent 需要（如 `.env`、`node_modules`）。在项目根目录创建 `.worktreeinclude`：
+Certain files are ignored by `.gitignore` but are required by the agent (e.g., `.env`, `node_modules`). Create a `.worktreeinclude` file in the project root:
 
 ```text
-# 每行一个路径，支持文件和目录
+# One path per line, supports files and directories
 .env
 node_modules
 ```
 
-- 文件：`shutil.copy2` 复制
-- 目录：创建 symlink（节省磁盘空间）
-- 路径遍历攻击防护：源路径和目标路径都必须在各自根目录内
+- Files: Copied using `shutil.copy2`.
+- Directories: Symlinks are created (to save disk space).
+- Path Traversal Attack Protection: Both source and target paths must be within their respective root directories.
 
-## 适用场景
+## Applicable Scenarios
 
-- 多个 agent 同时修改同一个仓库的不同部分
-- 保护主分支不被实验性修改污染
-- 与多 Profile 搭配使用（不同 Profile + 不同 worktree = 完全隔离的并行开发）
+- Multiple agents simultaneously modifying different parts of the same repository.
+- Protecting the main branch from experimental changes.
+- Used in conjunction with multiple Profiles (different Profile + different worktree = fully isolated parallel development).
 
-## 相关页面
+## Related Pages
 
-- [[configuration-and-profiles]] — 多 Profile 架构
-- [[multi-agent-architecture]] — 多 Agent 协作
+- [[configuration-and-profiles]] — Multi-Profile Architecture
+- [[multi-agent-architecture]] — Multi-Agent Collaboration
 
-## 关键源码
+## Key Source Files
 
 - `cli.py` — `_setup_worktree()` / `_cleanup_worktree()`
-- `hermes_cli/main.py` — `-w`/`--worktree` 参数解析
+- `hermes_cli/main.py` — Parsing of `-w`/`--worktree` parameters.

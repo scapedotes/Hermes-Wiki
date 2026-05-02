@@ -4,25 +4,25 @@ created: 2026-04-07
 updated: 2026-04-07
 type: entity
 tags: [component, agent, module]
-sources: [hermes-agent 源码分析 2026-04-07]
+sources: [Hermes Agent Source Code Analysis 2026-04-07]
 ---
 
 # AIAgent Class
 
-## 位置
+## Location
 
 `run_agent.py`
 
-## 概述
+## Overview
 
-AIAgent 是 Hermes Agent 的核心对话循环类，负责管理 LLM 交互、工具调用和会话状态。
+AIAgent is the core conversation loop class of Hermes Agent, responsible for managing LLM interactions, tool calls, and session state.
 
-## 构造函数
+## Constructor
 
 ```python
 class AIAgent:
     def __init__(self,
-        model: str = "",  # 默认空字符串，运行时解析为 "anthropic/claude-opus-4.6"
+        model: str = "",  # Default empty string, parsed as "anthropic/claude-opus-4.6" at runtime
         max_iterations: int = 90,
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
@@ -32,24 +32,24 @@ class AIAgent:
         session_id: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
-        # ... 更多参数：provider, api_mode, callbacks, routing params
+        # ... more parameters: provider, api_mode, callbacks, routing params
     ):
 ```
 
-## 核心方法
+## Core Methods
 
 ### `chat(self, message: str, stream_callback: Optional[callable] = None) -> str`
 
-简单接口，返回最终响应字符串。
+Simple interface, returns the final response string.
 
 ### `run_conversation(self, user_message: str, system_message: str = None, conversation_history: List[Dict] = None, task_id: str = None, stream_callback: Optional[callable] = None, persist_user_message: Optional[str] = None) -> Dict[str, Any]`
 
-完整接口，返回 `{final_response, messages}` 字典。
+Full interface, returns a `{final_response, messages}` dictionary.
 
-## 对话循环
+## Conversation Loop
 
 ```python
-while api_call_count < self.max_iterations and self.iteration_budget.consume():  # consume() 原子地检查并递减剩余预算
+while api_call_count < self.max_iterations and self.iteration_budget.consume():  # consume() atomically checks and decrements the remaining budget
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -64,24 +64,24 @@ while api_call_count < self.max_iterations and self.iteration_budget.consume(): 
         return response.content
 ```
 
-## 关键特性
+## Key Features
 
-- **完全同步** — 不使用 asyncio
-- **工具循环** — 支持多轮工具调用
-- **迭代预算** — 控制最大 API 调用次数
-- **平台感知** — 根据平台注入不同提示
-- **记忆集成** — 自动加载和注入记忆
-- **技能集成** - 构建技能索引
-- **上下文压缩** — 自动管理上下文长度
+- **Fully Synchronous** — Does not use asyncio
+- **Tool Looping** — Supports multi-turn tool calls
+- **Iteration Budget** — Controls the maximum number of API calls
+- **Platform Aware** — Injects different prompts based on the platform
+- **Memory Integration** — Automatically loads and injects memory
+- **Skill Integration** - Builds skill indexes
+- **Context Compression** — Automatically manages context length
 
-## 相关页面
+## Related Pages
 
-- [[agent-loop-and-prompt-assembly]] — Agent 核心循环与系统提示组装
-- [[multi-agent-architecture]] — 子代理委派与迭代预算系统
-- [[prompt-builder-architecture]] — 系统提示构建架构
+- [[agent-loop-and-prompt-assembly]] — Agent Core Loop and System Prompt Assembly
+- [[multi-agent-architecture]] — Sub-Agent Delegation and Iteration Budget System
+- [[prompt-builder-architecture]] — System Prompt Building Architecture
 
-## 相关文件
+## Related Files
 
-- `run_agent.py` — 实现
-- `model_tools.py` — 工具编排
-- `agent/prompt_builder.py` — 系统提示构建
+- `run_agent.py` — Implementation
+- `model_tools.py` — Tool Orchestration
+- `agent/prompt_builder.py` — System Prompt Building

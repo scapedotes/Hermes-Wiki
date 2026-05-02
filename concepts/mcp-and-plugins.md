@@ -1,32 +1,32 @@
 ---
-title: MCP 集成与插件系统
+title: MCP Integration and Plugin System
 created: 2026-04-07
 updated: 2026-04-07
 type: concept
 tags: [architecture, mcp, plugins, extensibility]
-sources: [hermes-agent 源码分析 2026-04-07]
+sources: [hermes-agent source code analysis 2026-04-07]
 ---
 
-# MCP 集成与插件系统
+# MCP Integration and Plugin System
 
-## 设计原理
+## Design Principles
 
-Hermes 通过 **MCP（Model Context Protocol）** 和**插件系统**实现可扩展性，允许连接外部工具和自定义行为。
+Hermes achieves extensibility through the **Model Context Protocol (MCP)** and a **plugin system**, enabling connection to external tools and custom behaviors.
 
-## MCP 集成
+## MCP Integration
 
 ```python
-# tools/mcp_tool.py (~2176 行)
+# tools/mcp_tool.py (~L2176)
 
 class MCPServerTask:
-    """MCP 服务器任务"""
+    """MCP Server Task"""
     
     def __init__(self, config: dict):
         self.servers = {}
         self.tools = {}
     
     async def connect_server(self, name: str, config: dict):
-        """连接 MCP 服务器"""
+        """Connect to an MCP server"""
         transport = config.get("transport", "stdio")
         
         if transport == "stdio":
@@ -45,13 +45,13 @@ class MCPServerTask:
                 "transport": transport,
             }
         
-        # 获取服务器工具
+        # Get server tools
         tools = await self._list_tools(name)
         for tool in tools:
             self.tools[f"{name}:{tool['name']}"] = tool
     
     async def call_tool(self, tool_name: str, args: dict) -> dict:
-        """调用 MCP 工具"""
+        """Call an MCP tool"""
         server_name, tool_name = tool_name.split(":", 1)
         server = self.servers[server_name]
         
@@ -61,17 +61,17 @@ class MCPServerTask:
             return await self._call_http_tool(server, tool_name, args)
 ```
 
-### MCP OAuth 支持
+### MCP OAuth Support
 
 ```python
 # tools/mcp_oauth.py
 
 async def authenticate_mcp_server(server_config: dict) -> dict:
-    """MCP 服务器 OAuth 认证"""
+    """MCP Server OAuth authentication"""
     auth_type = server_config.get("auth", {}).get("type")
     
     if auth_type == "oauth":
-        # 实现 OAuth 流程
+        # Implement OAuth flow
         auth_url = server_config["auth"]["url"]
         client_id = server_config["auth"]["client_id"]
         # ...
@@ -83,27 +83,27 @@ async def authenticate_mcp_server(server_config: dict) -> dict:
     return {}
 ```
 
-## 插件系统
+## Plugin System
 
 ```python
 # hermes_cli/plugins.py
 
 class Plugin:
-    """插件基类"""
+    """Base class for plugins"""
     
     name: str = ""
     version: str = "1.0.0"
     description: str = ""
     
     def on_load(self):
-        """插件加载时调用"""
+        """Called when the plugin is loaded"""
         pass
     
     def on_unload(self):
-        """插件卸载时调用"""
+        """Called when the plugin is unloaded"""
         pass
 
-# 钩子系统
+# Hook System
 _HOOKS = {
     "on_session_start": [],
     "pre_llm_call": [],
@@ -113,12 +113,12 @@ _HOOKS = {
 }
 
 def register_hook(hook_name: str, callback: callable):
-    """注册钩子回调"""
+    """Register a hook callback"""
     if hook_name in _HOOKS:
         _HOOKS[hook_name].append(callback)
 
 def invoke_hook(hook_name: str, **kwargs) -> list:
-    """调用钩子"""
+    """Invoke a hook"""
     results = []
     for callback in _HOOKS.get(hook_name, []):
         try:
@@ -129,41 +129,41 @@ def invoke_hook(hook_name: str, **kwargs) -> list:
     return results
 ```
 
-### 内存插件
+### Memory Plugin
 
 ```python
 # plugins/memory/__init__.py
 
 class MemoryPlugin(Plugin):
-    """内存插件（Honcho 集成）"""
+    """Memory plugin (Honcho integration)"""
     
     name = "honcho-memory"
     
     def on_session_start(self, session_id: str, **kwargs):
-        """会话开始时预热缓存"""
+        """Warm up cache when a session starts"""
         self._warm_cache(session_id)
     
     def pre_llm_call(self, user_message: str, **kwargs):
-        """LLM 调用前注入上下文"""
+        """Inject context before LLM call"""
         context = self._fetch_context(user_message)
         return {"context": context}
     
     def on_session_end(self, messages: list, **kwargs):
-        """会话结束时持久化"""
+        """Persist at session end"""
         self._persist_session(messages)
 ```
 
-## 插件 CLI
+## Plugin CLI
 
 ```bash
-# 插件管理
-hermes plugins list           # 列出已安装插件
-hermes plugins install <name> # 安装插件
-hermes plugins remove <name>  # 移除插件
-hermes plugins update <name>  # 更新插件
+# Plugin management
+hermes plugins list           # List installed plugins
+hermes plugins install <name> # Install a plugin
+hermes plugins remove <name>  # Remove a plugin
+hermes plugins update <name>  # Update a plugin
 ```
 
-## 配置
+## Configuration
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -181,27 +181,27 @@ plugins:
     - custom-plugin
 ```
 
-## 优越性分析
+## Comparative Analysis
 
-### 与其他 Agent 框架对比
+### Comparison with Other Agent Frameworks
 
-| 特性 | Hermes | Cursor | Claude Code |
-|------|--------|--------|-------------|
-| MCP 支持 | ✅ 完整 | ✅ | ✅ |
+| Feature | Hermes | Cursor | Claude Code |
+|---------|--------|--------|-------------|
+| MCP Support | ✅ Full | ✅ | ✅ |
 | MCP OAuth | ✅ | ❌ | ✅ |
-| 插件系统 | ✅ 钩子系统 | ❌ | ❌ |
-| 自定义工具 | ✅ 注册表 | ❌ | ❌ |
-| 插件 CLI | ✅ | N/A | N/A |
+| Plugin System | ✅ Hook system | ❌ | ❌ |
+| Custom Tools | ✅ Registry | ❌ | ❌ |
+| Plugin CLI | ✅ | N/A | N/A |
 
-## 相关页面
+## Related Pages
 
-- [[tool-registry-architecture]] — 插件通过 registry.register() 注册工具
-- [[hook-system-architecture]] — 插件钩子系统与网关事件钩子互补
-- [[model-tools-dispatch]] — MCP 工具通过 discover 机制集成到编排层
+- [[tool-registry-architecture]] — Plugins register tools via registry.register()
+- [[hook-system-architecture]] — The plugin hook system complements gateway event hooks
+- [[model-tools-dispatch]] — MCP tools are integrated into the orchestration layer via a discovery mechanism
 
-## 相关文件
+## Related Files
 
-- `tools/mcp_tool.py` — MCP 服务器任务
+- `tools/mcp_tool.py` — MCP Server Task
 - `tools/mcp_oauth.py` — MCP OAuth
-- `hermes_cli/plugins.py` — 插件系统
-- `plugins/` — 插件目录
+- `hermes_cli/plugins.py` — Plugin System
+- `plugins/` — Plugin Directory

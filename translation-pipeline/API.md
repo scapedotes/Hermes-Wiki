@@ -77,7 +77,7 @@ curl https://your-service-url/status
 curl -X POST https://your-service-url/translate \
   -H "Content-Type: application/json" \
   -d '{
-    "content": "# 标题\n这是内容。",
+    "content": "# Title\nThis is content.",
     "filename": "example.md"
   }'
 ```
@@ -89,7 +89,7 @@ curl -X POST https://your-service-url/translate \
 **Response** (200 OK):
 ```json
 {
-  "original": "# 标题\n这是内容。",
+  "original": "# Title\nThis is content.",
   "translated": "# Title\nThis is content.",
   "filename": "example.md"
 }
@@ -403,7 +403,7 @@ class TranslationClient:
 
 # Usage
 client = TranslationClient("https://your-service-url")
-result = client.translate("# 标题", "README.md")
+result = client.translate("# Title", "README.md")
 print(result['translated'])
 ```
 
@@ -420,7 +420,7 @@ curl $SERVICE_URL/health
 # Translate
 curl -X POST $SERVICE_URL/translate \
   -H "Content-Type: application/json" \
-  -d '{"content":"# 标题"}'
+  -d '{"content":"# Title"}'
 
 # List translations
 curl $SERVICE_URL/list-translations

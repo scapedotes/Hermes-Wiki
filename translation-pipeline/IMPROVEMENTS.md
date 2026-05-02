@@ -7,9 +7,9 @@ Complete overhaul of the Hermes Wiki translation pipeline with focus on ease of 
 ## Key Improvements
 
 ### 1. Local Mode Support ✨
-**Problem**: Original pipeline required Google Cloud account and complex setup.
+**Problem**: The original pipeline required a Google Cloud account and complex setup.
 
-**Solution**: Added local mode that runs entirely on user's machine.
+**Solution**: Added local mode that runs entirely on the user's machine.
 
 **Benefits**:
 - No GCP account needed
@@ -20,7 +20,7 @@ Complete overhaul of the Hermes Wiki translation pipeline with focus on ease of 
 **Implementation**:
 - `LOCAL_MODE` environment variable
 - Local filesystem storage instead of GCS
-- Automatic fallback if GCS unavailable
+- Automatic fallback if GCS is unavailable
 
 ### 2. One-Command Deployment 🚀
 **Problem**: Manual configuration was error-prone and time-consuming.
@@ -36,7 +36,7 @@ Complete overhaul of the Hermes Wiki translation pipeline with focus on ease of 
 - Starts service or deploys to Cloud Run
 
 ### 3. Complete GitHub Integration 📦
-**Problem**: Original `translate-repo` endpoint created tasks but didn't process them.
+**Problem**: The original `translate-repo` endpoint created tasks but didn't process them.
 
 **Solution**: Full implementation with repository cloning and batch processing.
 
@@ -59,7 +59,7 @@ Complete overhaul of the Hermes Wiki translation pipeline with focus on ease of 
 - Faster re-runs
 
 ### 5. Enhanced CLI 🎯
-**Problem**: Original client required manual URL configuration and had poor UX.
+**Problem**: The original client required manual URL configuration and had poor UX.
 
 **Solution**: Beautiful, user-friendly CLI with auto-configuration.
 
@@ -133,20 +133,20 @@ Complete overhaul of the Hermes Wiki translation pipeline with focus on ease of 
 ## Files Added/Modified
 
 ### New Files
-1. **app_enhanced.py** - Complete rewrite with local mode and GitHub integration
-2. **client_enhanced.py** - Enhanced CLI with progress bars and auto-config
-3. **deploy.sh** - Interactive deployment script
-4. **quick_start.py** - One-command translation helper
-5. **terminology_map.json** - 170+ technical term mappings
-6. **.env.example** - Environment configuration template
-7. **terraform/main.tf** - Complete infrastructure code
-8. **terraform/variables.tf** - Terraform variables
-9. **README_v2.md** - Comprehensive updated documentation
+1.  **app_enhanced.py** - Complete rewrite with local mode and GitHub integration
+2.  **client_enhanced.py** - Enhanced CLI with progress bars and auto-config
+3.  **deploy.sh** - Interactive deployment script
+4.  **quick_start.py** - One-command translation helper
+5.  **terminology_map.json** - 170+ technical term mappings
+6.  **.env.example** - Environment configuration template
+7.  **terraform/main.tf** - Complete infrastructure code
+8.  **terraform/variables.tf** - Terraform variables
+9.  **README_v2.md** - Comprehensive updated documentation
 
 ### Modified Files
-1. **requirements.txt** - Updated dependencies (anthropic 0.18.1, added python-dotenv)
-2. **Dockerfile** - Updated to use enhanced app and install git
-3. **terraform/terraform.tfvars.example** - Updated with all variables
+1.  **requirements.txt** - Updated dependencies (anthropic 0.18.1, added python-dotenv)
+2.  **Dockerfile** - Updated to use enhanced app and install git
+3.  **terraform/terraform.tfvars.example** - Updated with all variables
 
 ## Technical Details
 
@@ -182,18 +182,18 @@ Client → Cloud Run → Claude API
 - **Terraform** - Infrastructure as Code
 
 ### Performance Optimizations
-1. **Parallel Processing** - Up to 5 workers by default
-2. **Content Caching** - SHA256-based deduplication
-3. **Batch Operations** - Process multiple files concurrently
-4. **Streaming** - Memory-efficient file handling
-5. **Connection Pooling** - Reuse HTTP connections
+1.  **Parallel Processing** - Up to 5 workers by default
+2.  **Content Caching** - SHA256-based deduplication
+3.  **Batch Operations** - Process multiple files concurrently
+4.  **Streaming** - Memory-efficient file handling
+5.  **Connection Pooling** - Reuse HTTP connections
 
 ### Security Improvements
-1. **Environment Variables** - Secrets not in code
-2. **IAM Permissions** - Least privilege access
-3. **HTTPS Only** - Encrypted communication
-4. **Token Validation** - Proper authentication
-5. **Input Sanitization** - Prevent injection attacks
+1.  **Environment Variables** - Secrets not in code
+2.  **IAM Permissions** - Least privilege access
+3.  **HTTPS Only** - Encrypted communication
+4.  **Token Validation** - Proper authentication
+5.  **Input Sanitization** - Prevent injection attacks
 
 ## Usage Examples
 
@@ -246,11 +246,11 @@ python3 client_enhanced.py translate --file README.md --output README-en.md
 
 ### For Existing Users
 
-1. **Backup your .env** (if you have one)
-2. **Pull latest changes**
-3. **Run deploy.sh** - it will detect existing config
-4. **Test with health check**: `python3 client_enhanced.py health`
-5. **Run a test translation**
+1.  **Backup your .env** (if you have one)
+2.  **Pull latest changes**
+3.  **Run deploy.sh** - it will detect existing config
+4.  **Test with health check**: `python3 client_enhanced.py health`
+5.  **Run a test translation**
 
 ### Breaking Changes
 - Client now uses `client_enhanced.py` instead of `client.py`
@@ -265,20 +265,20 @@ python3 client_enhanced.py translate --file README.md --output README-en.md
 ## Future Enhancements
 
 ### Planned Features
-1. **Resume Failed Translations** - Checkpoint and resume
-2. **Translation Memory** - Reuse previous translations
-3. **Quality Scoring** - Automatic translation quality assessment
-4. **Multi-language Support** - Translate to languages beyond English
-5. **Web UI** - Browser-based interface
-6. **Webhook Integration** - Auto-translate on git push
-7. **Diff Translation** - Only translate changed files
-8. **Custom Terminology** - User-provided term mappings
+1.  **Resume Failed Translations** - Checkpoint and resume
+2.  **Translation Memory** - Reuse previous translations
+3.  **Quality Scoring** - Automatic translation quality assessment
+4.  **Multi-language Support** - Translate to languages beyond English
+5.  **Web UI** - Browser-based interface
+6.  **Webhook Integration** - Auto-translate on git push
+7.  **Diff Translation** - Only translate changed files
+8.  **Custom Terminology** - User-provided term mappings
 
 ### Performance Improvements
-1. **Redis Caching** - Distributed cache for cloud mode
-2. **Batch API Calls** - Reduce API overhead
-3. **Streaming Translation** - Process large files in chunks
-4. **CDN Integration** - Faster downloads
+1.  **Redis Caching** - Distributed cache for cloud mode
+2.  **Batch API Calls** - Reduce API overhead
+3.  **Streaming Translation** - Process large files in chunks
+4.  **CDN Integration** - Faster downloads
 
 ## Cost Analysis
 
@@ -312,12 +312,12 @@ The pipeline is now production-ready and can translate the entire Hermes Wiki re
 
 ## Next Steps
 
-1. **Test the deployment** - Run `./deploy.sh` and verify
-2. **Translate Hermes Wiki** - Run the full translation
-3. **Review translations** - Check quality and terminology
-4. **Iterate on terminology** - Refine mappings as needed
-5. **Deploy to production** - Use Cloud Run for team access
-6. **Automate** - Set up webhook for auto-translation
+1.  **Test the deployment** - Run `./deploy.sh` and verify
+2.  **Translate Hermes Wiki** - Run the full translation
+3.  **Review translations** - Check quality and terminology
+4.  **Iterate on terminology** - Refine mappings as needed
+5.  **Deploy to production** - Use Cloud Run for team access
+6.  **Automate** - Set up webhook for auto-translation
 
 ---
 

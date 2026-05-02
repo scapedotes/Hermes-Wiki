@@ -1,5 +1,6 @@
+```
 ---
-title: Provider Transport 架构
+title: Provider Transport Architecture
 created: 2026-04-18
 updated: 2026-04-18
 type: concept
@@ -7,17 +8,17 @@ tags: [architecture, module, provider, transport, api-dispatch]
 sources: [agent/transports/base.py, agent/transports/anthropic.py, agent/transports/chat_completions.py, agent/transports/bedrock.py, agent/transports/codex.py, agent/transports/types.py, agent/transports/__init__.py, run_agent.py]
 ---
 
-# Provider Transport — API 路径统一抽象
+# Provider Transport — Unified Abstraction for API Paths
 
-## 概述
+## Overview
 
-Provider Transport 是 **v2026.4.17+** 引入的架构级重构，用统一的 ABC 抽象了所有 provider 的 API 数据路径（Anthropic Messages、OpenAI Chat Completions、OpenAI Responses API、AWS Bedrock）。位于 `agent/transports/`（1217 行），替代了之前散落在 `run_agent.py` 各处的 `if api_mode == "anthropic_messages": ... elif ...` 分支判断。
+Provider Transport is an architecture-level refactor introduced in **v2026.4.17+** that unifies the API data paths for all providers (Anthropic Messages, OpenAI Chat Completions, OpenAI Responses API, AWS Bedrock) using a single ABC (Abstract Base Class) abstraction. Located in `agent/transports/` (1217 lines), it replaces the previous `if api_mode == "anthropic_messages": ... elif ...` conditional branches scattered throughout `run_agent.py`.
 
-**核心理念**：**一个 provider 的消息转换、工具转换、参数构建、响应规范化，应该聚合在一个类里，而不是散落在调用点。**
+**Core Principle**: **A provider's message conversion, tool conversion, parameter construction, and response normalization should be aggregated within a single class, rather than dispersed across various call sites.**
 
-## 架构原理
+## Architectural Principles
 
-### 四个抽象方法 + 三个可选钩子
+### Four Abstract Methods + Three Optional Hooks
 
 ```python
 # agent/transports/base.py
@@ -25,124 +26,125 @@ class ProviderTransport(ABC):
     @property
     @abstractmethod
     def api_mode(self) -> str:
-        """处理的 api_mode 字符串（如 'anthropic_messages'）"""
+        """The api_mode string handled (e.g., 'anthropic_messages')"""
 
     @abstractmethod
     def convert_messages(self, messages, **kwargs) -> Any:
-        """OpenAI 格式消息 → provider 原生格式"""
+        """OpenAI format messages → provider native format"""
 
     @abstractmethod
     def convert_tools(self, tools) -> Any:
-        """OpenAI 工具定义 → provider 原生格式"""
+        """OpenAI tool definition → provider native format"""
 
     @abstractmethod
     def build_kwargs(self, model, messages, tools=None, **params) -> Dict:
-        """组装完整的 API 调用 kwargs（通常内部调用前两个方法）"""
+        """Assemble complete API call kwargs (usually calls the first two methods internally)"""
 
     @abstractmethod
     def normalize_response(self, response, **kwargs) -> NormalizedResponse:
-        """原始响应 → 共享的 NormalizedResponse 类型（唯一返回 transport 层类型的方法）"""
+        """Raw response → shared NormalizedResponse type (the only method returning a transport layer type)"""
 
-    # ── 可选钩子 ───────────────────────────────────────────
-    def validate_response(self, response) -> bool: ...       # 结构校验
-    def extract_cache_stats(self, response) -> Optional[Dict]: ...  # cache hit/create 提取
-    def map_finish_reason(self, raw_reason) -> str: ...      # stop reason 映射
+    # ── Optional Hooks ───────────────────────────────────────────
+    def validate_response(self, response) -> bool: ...       # Structure validation
+    def extract_cache_stats(self, response) -> Optional[Dict]: ...  # Cache hit/create extraction
+    def map_finish_reason(self, raw_reason) -> str: ...      # Stop reason mapping
 ```
 
-**设计要点**：
-- Transport **只负责数据路径**，不管 client 生命周期、streaming、auth、credential refresh、retry、interrupt handling——这些都在 `AIAgent` 上
-- `normalize_response` 是唯一返回 transport 层类型（`NormalizedResponse`）的方法，其他方法返回 provider 原生结构
+**Key Design Points**:
+- Transport is **solely responsible for the data path**, not for client lifecycle, streaming, authentication, credential refresh, retry mechanisms, or interrupt handling—these responsibilities reside within `AIAgent`.
+- `normalize_response` is the only method that returns a transport layer type (`NormalizedResponse`), while other methods return provider-native structures.
 
-### 已实现的 Transport
+### Implemented Transports
 
-| Transport | 文件 | 行数 | api_mode | 覆盖 |
-|-----------|------|------|----------|------|
-| `AnthropicTransport` | `transports/anthropic.py` | 177 | `anthropic_messages` | Claude（直连、Nous Portal） |
-| `ChatCompletionsTransport` | `transports/chat_completions.py` | 387 | `chat_completions`、`openai` 等 | OpenAI、OpenRouter、Gemini、xAI、custom OpenAI 兼容 |
-| `ResponsesApiTransport` | `transports/codex.py` | 217 | `openai_responses` | OpenAI Codex、Responses API |
-| `BedrockTransport` | `transports/bedrock.py` | 154 | `bedrock_converse` | AWS Bedrock（Converse API） |
-| `NormalizedResponse` | `transports/types.py` | 142 | — | 共享响应类型 |
-| 基类 + 注册表 | `transports/base.py` + `__init__.py` | 89 + 51 | — | ABC + `get_transport()` 惰性发现 |
+| Transport | File | Lines | api_mode | Coverage |
+|-----------|------|-------|----------|----------|
+| `AnthropicTransport` | `transports/anthropic.py` | 177 | `anthropic_messages` | Claude (Direct Connect, Nous Portal) |
+| `ChatCompletionsTransport` | `transports/chat_completions.py` | 387 | `chat_completions`、`openai` etc. | OpenAI, OpenRouter, Gemini, xAI, custom OpenAI compatible |
+| `ResponsesApiTransport` | `transports/codex.py` | 217 | `openai_responses` | OpenAI Codex, Responses API |
+| `BedrockTransport` | `transports/bedrock.py` | 154 | `bedrock_converse` | AWS Bedrock (Converse API) |
+| `NormalizedResponse` | `transports/types.py` | 142 | — | Shared response type |
+| Base Class + Registry | `transports/base.py` + `__init__.py` | 89 + 51 | — | ABC + `get_transport()` lazy discovery |
 
-### 注册表：惰性发现
+### Registry: Lazy Discovery
 
 ```python
 # agent/transports/__init__.py
 def get_transport(api_mode: str) -> ProviderTransport:
-    """按需 import 对应的 transport 模块，触发模块级 register_transport() 调用"""
+    """Imports the corresponding transport module on demand, triggering module-level register_transport() call"""
     ...
 
 def register_transport(api_mode: str, transport_cls: type) -> None:
-    """transport 模块在 import 时调用，把自己注册到 registry"""
+    """Called by transport modules on import to register themselves with the registry"""
     ...
 ```
 
-首次 `get_transport("anthropic_messages")` 调用时才 import `transports/anthropic.py`——**延迟到实际使用**，启动不会因为 import 一堆 SDK 而变慢。
+Only when `get_transport("anthropic_messages")` is called for the first time is `transports/anthropic.py` imported—**deferring until actual use**, which prevents startup slowdowns caused by eagerly importing a bundle of SDKs.
 
-## 在 run_agent.py 中的接入点
+## Integration Points in run_agent.py
 
-`AnthropicTransport`、`ChatCompletionsTransport`、`BedrockTransport`、`ResponsesApiTransport` 替代了 `run_agent.py` 中 **20+ 个直接调用 provider 适配器函数的位置**：
+`AnthropicTransport`, `ChatCompletionsTransport`, `BedrockTransport`, `ResponsesApiTransport` have replaced **20+ direct calls to provider adapter functions** in `run_agent.py`:
 
-| 场景 | 新方法 |
-|------|--------|
-| 主 kwargs 构建（按 api_mode 派发） | `transport.build_kwargs(...)` |
-| 记忆 flush（build_kwargs + normalize） | `_tflush.build_kwargs` / `_tfn.normalize_response` |
-| 迭代上限摘要 + 重试 | `_tsum.build_kwargs` / `_tsum.normalize_response` |
-| 响应结构校验 | `transport.validate_response` |
-| finish reason 映射（Anthropic stop_reason → OpenAI） | `transport.map_finish_reason` |
-| 截断响应的规范化 | `transport.normalize_response` |
-| cache 命中/创建统计提取 | `transport.extract_cache_stats` |
-| 主 normalize loop | `transport.normalize_response` |
+| Scenario | New Method |
+|----------|------------|
+| Main kwargs construction (dispatched by api_mode) | `transport.build_kwargs(...)` |
+| Memory flush (build_kwargs + normalize) | `_tflush.build_kwargs` / `_tfn.normalize_response` |
+| Iteration limit summary + retry | `_tsum.build_kwargs` / `_tsum.normalize_response` |
+| Response structure validation | `transport.validate_response` |
+| Finish reason mapping (Anthropic stop_reason → OpenAI) | `transport.map_finish_reason` |
+| Normalization of truncated responses | `transport.normalize_response` |
+| Cache hit/create statistics extraction | `transport.extract_cache_stats` |
+| Main normalize loop | `transport.normalize_response` |
 
-所有 transport 方法调用路径下的 adapter import 完全收敛到 transport 类内部，`run_agent.py` 本身不再直接 import `anthropic_adapter` 等函数。
+All adapter imports within the call paths of transport methods are now fully encapsulated within the transport classes, and `run_agent.py` itself no longer directly imports functions like `anthropic_adapter`.
 
-**零直接 adapter imports 残留**（指 transport 方法的调用路径）。
+**Zero direct adapter imports remaining** (referring to the call paths of transport methods).
 
-辅助客户端（`agent/auxiliary_client.py`）也迁移到 transport（compression、memory flush、session summarization 路径）。
+Auxiliary clients (`agent/auxiliary_client.py`) have also been migrated to the transport layer (for compression, memory flush, and session summarization paths).
 
-## 设计优越性
+## Design Advantages
 
-### 对比旧架构
+### Compared to the Old Architecture
 
-| 维度 | 旧方案 | Transport ABC |
-|------|--------|---------------|
-| 分支代码 | `run_agent.py` 散落 `if api_mode == ...` 判断 | 单点 `get_transport(api_mode)` |
-| 添加新 provider | 改多处（转换、normalize、cache stats...） | 新增一个 transport 子类 |
-| 测试 | 难以单独测消息/工具转换 | 每个方法可独立单元测 |
-| 循环依赖 | 容易 | 零——transport 只 import `base` / `types` |
-| 启动开销 | 可能 eager import 所有 SDK | 惰性 import，按需加载 |
+| Aspect | Old Approach | Transport ABC |
+|--------|--------------|---------------|
+| Branching code | `if api_mode == ...` conditionals scattered in `run_agent.py` | Single point `get_transport(api_mode)` |
+| Adding new provider | Modify multiple places (conversion, normalize, cache stats...) | Add a new transport subclass |
+| Testing | Difficult to test message/tool conversion independently | Each method can be unit-tested independently |
+| Circular dependencies | Prone to them | Zero—transport only imports `base` / `types` |
+| Startup overhead | Potentially eager import all SDKs | Lazy import, loaded on demand |
 
-### 单一职责
+### Single Responsibility Principle
 
-- **Transport**：消息/工具格式转换 + 响应规范化
-- **AIAgent**：client 生命周期、streaming、auth、retry、interrupt
-- **Adapter**（旧代码）：保留，transport 内部委托给它，逐步废弃
+- **Transport**: Message/tool format conversion + response normalization
+- **AIAgent**: Client lifecycle, streaming, authentication, retry, interrupt handling
+- **Adapter** (old code): Retained, delegated to internally by transport, to be gradually deprecated
 
-### 迁移状态
+### Migration Status
 
-| Provider | Transport 覆盖 | 状态 |
-|----------|---------------|------|
-| Anthropic | AnthropicTransport（委托 `anthropic_adapter.py`） | 全路径完成 |
-| Chat Completions（OpenAI 兼容） | ChatCompletionsTransport | 全路径完成 |
-| OpenAI Responses API（Codex） | ResponsesApiTransport | 全路径完成 |
-| AWS Bedrock | BedrockTransport | 全路径完成 |
-| Auxiliary Client（压缩/记忆） | 已迁移到 Transport | 完成 |
+| Provider | Transport Coverage | Status |
+|----------|--------------------|--------|
+| Anthropic | AnthropicTransport (delegates to `anthropic_adapter.py`) | Full path complete |
+| Chat Completions (OpenAI compatible) | ChatCompletionsTransport | Full path complete |
+| OpenAI Responses API (Codex) | ResponsesApiTransport | Full path complete |
+| AWS Bedrock | BedrockTransport | Full path complete |
+| Auxiliary Client (Compression/Memory) | Migrated to Transport | Complete |
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[auxiliary-client-architecture]] — auxiliary_client 已迁移到 Transport
-- [[smart-model-routing]] — transport 基于 api_mode 派发，与模型路由配合
-- [[interrupt-and-fault-tolerance]] — 中断、retry 仍在 AIAgent 层，不属于 transport 职责
-- [[prompt-caching-optimization]] — cache 统计通过 `extract_cache_stats` 钩子暴露
+- [[auxiliary-client-architecture]] — `auxiliary_client` has been migrated to Transport
+- [[smart-model-routing]] — Transport dispatches based on `api_mode`, cooperating with model routing
+- [[interrupt-and-fault-tolerance]] — Interrupt and retry mechanisms remain in the AIAgent layer, not within transport's responsibility
+- [[prompt-caching-optimization]] — Cache statistics are exposed via the `extract_cache_stats` hook
 
-## 相关文件
+## Related Files
 
-- `agent/transports/base.py`（89 行） — `ProviderTransport` ABC
-- `agent/transports/types.py`（142 行） — `NormalizedResponse` 共享类型
-- `agent/transports/__init__.py`（51 行） — 注册表 + 惰性发现
-- `agent/transports/anthropic.py`（177 行） — Anthropic Messages
-- `agent/transports/chat_completions.py`（387 行） — Chat Completions
-- `agent/transports/codex.py`（217 行） — OpenAI Responses API
-- `agent/transports/bedrock.py`（154 行） — AWS Bedrock Converse
-- `run_agent.py` — 10+ 接入点
-- `agent/auxiliary_client.py` — 辅助路径已迁移
+- `agent/transports/base.py` (89 lines) — `ProviderTransport` ABC
+- `agent/transports/types.py` (142 lines) — `NormalizedResponse` shared type
+- `agent/transports/__init__.py` (51 lines) — Registry + lazy discovery
+- `agent/transports/anthropic.py` (177 lines) — Anthropic Messages
+- `agent/transports/chat_completions.py` (387 lines) — Chat Completions
+- `agent/transports/codex.py` (217 lines) — OpenAI Responses API
+- `agent/transports/bedrock.py` (154 lines) — AWS Bedrock Converse
+- `run_agent.py` — 10+ integration points
+- `agent/auxiliary_client.py` — Auxiliary paths migrated
+```

@@ -7,196 +7,196 @@ tags: [memory, architecture, module]
 sources: [tools/memory_tool.py, agent/memory_manager.py, agent/memory_provider.py, agent/builtin_memory_provider.py, run_agent.py, agent/prompt_builder.py, plugins/memory/__init__.py]
 ---
 
-# 记忆系统架构
+# Memory System Architecture
 
-## 概述
+## Overview
 
-Hermes 的记忆系统是一个**三层架构**：存储层（MemoryStore）、编排层（MemoryManager）、插件层（MemoryProvider）。
+Hermes' memory system adopts a **three-tiered architecture**: Storage Layer (MemoryStore), Orchestration Layer (MemoryManager), and Plugin Layer (MemoryProvider).
 
 ```text
 ┌─────────────────────────────────────────────┐
 │              run_agent.py                   │
-│  (prefetch → 注入 → tool 拦截 → sync → flush) │
+│  (prefetch → inject → tool interception → sync → flush) │
 └──────────────────┬──────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────┐
-│           MemoryManager (编排层)             │
-│  "内置 + 至多一个外部 Provider"               │
-│  工具 schema 合并 / 生命周期钩子广播           │
+│           MemoryManager (Orchestration Layer)             │
+│  "Built-in + At most one external Provider"               │
+│  Tool schema merging / Lifecycle hook broadcasting           │
 └────────┬────────────────────┬───────────────┘
          │                    │
 ┌────────▼────────┐  ┌───────▼────────────────┐
-│ BuiltinProvider │  │ External Provider (可选) │
-│ MEMORY.md       │  │ honcho / mem0 / 8 种可选 │
+│ BuiltinProvider │  │ External Provider (Optional) │
+│ MEMORY.md       │  │ honcho / mem0 / 8 options │
 │ USER.md         │  └────────────────────────┘
 │ MemoryStore     │
 └─────────────────┘
 ```
 
-## 一、存储层：MemoryStore
+## 1. Storage Layer: MemoryStore
 
-文件路径：`tools/memory_tool.py`（561 行）
+File path: `tools/memory_tool.py` (561 lines)
 
-### 双文件存储
+### Dual-File Storage
 
-- **`MEMORY.md`**（默认上限 2200 字符）— Agent 的个人笔记（环境事实、项目约定、工具特性）
-- **`USER.md`**（默认上限 1375 字符）— 用户画像（偏好、沟通风格、期望）
-- 存储路径：`{HERMES_HOME}/memories/`
-- 条目分隔符：`§`（section sign），支持多行条目
+- **`MEMORY.md`** (default limit 2200 characters) — Agent's personal notes (environmental facts, project conventions, tool characteristics)
+- **`USER.md`** (default limit 1375 characters) — User profile (preferences, communication style, expectations)
+- Storage path: `{HERMES_HOME}/memories/`
+- Entry delimiter: `§` (section sign), supports multi-line entries
 
-### 冻结快照模式
+### Frozen Snapshot Mode
 
-这是最关键的设计决策：
+This is the most crucial design decision:
 
 ```text
-会话启动 → load_from_disk() → 读取文件 → 捕获快照到 _system_prompt_snapshot
+Session start → load_from_disk() → Reads file → Captures snapshot to _system_prompt_snapshot
                                                      │
-                                              快照注入系统提示
-                                              (整个会话不变)
+                                              Snapshot injected into system prompt
+                                              (remains unchanged for the entire session)
                                                      │
-会话中写入 → 更新磁盘文件 + memory_entries ─────── 不修改系统提示
+Writes during session → Updates disk file + memory_entries ─────── Does not modify system prompt
                                                      │
-下次会话 → 重新 load_from_disk() → 新快照生效
+Next session → Re-loads from_disk() → New snapshot takes effect
 ```
 
-**为什么？** 保持系统提示稳定 → Anthropic prefix cache 不失效。写入立即持久化到磁盘，但当前会话的系统提示看不到自己的写入。
+**Why?** To keep the system prompt stable → Prevents Anthropic prefix cache invalidation. Writes are immediately persisted to disk, but the current session's system prompt does not see its own writes.
 
-### 原子写入 + 文件锁
+### Atomic Writes + File Locking
 
 ```python
-# 原子写入：temp file + fsync + os.replace()
+# Atomic write: temp file + fsync + os.replace()
 def _write_file(path, entries):
     fd, tmp_path = tempfile.mkstemp(dir=path.parent)
-    os.fsync(f.fileno())
-    os.replace(tmp_path, str(path))  # 原子操作
+    os.fsync(f.fileno()) # Assuming 'f' is the file object opened with fd
+    os.replace(tmp_path, str(path))  # Atomic operation
 
-# 文件锁：独立 .lock 文件 + fcntl 排他锁
+# File lock: Separate .lock file + fcntl exclusive lock
 def _file_lock(path):
-    lock_path = path.with_suffix(path.suffix + ".lock")  # 不锁数据文件本身
-    fcntl.flock(fd, fcntl.LOCK_EX)
+    lock_path = path.with_suffix(path.suffix + ".lock")  # Does not lock the data file itself
+    fcntl.flock(fd, fcntl.LOCK_EX) # Assuming 'fd' is the file descriptor for lock_path
 ```
 
-读者总是看到完整的旧文件或完整的新文件，无中间状态。
+Readers always see either the complete old file or the complete new file, with no intermediate states.
 
-### 安全扫描
+### Security Scan
 
-所有写入内容经过 12 种威胁模式检测 + 不可见 Unicode 字符检测：
+All written content undergoes 12 threat pattern detections + invisible Unicode character detection:
 
 ```python
 _MEMORY_THREAT_PATTERNS = [
-    # 提示注入
+    # Prompt Injection
     ("ignore previous instructions", "prompt_injection"),
     ("you are now", "role_hijack"),
     ("do not tell the user", "deception_hide"),
     ("act as if you have no restrictions", "bypass_restrictions"),
-    # 泄露
+    # Exfiltration
     ("curl ... $KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API", "exfil_curl"),
     ("wget ... $KEY|TOKEN|SECRET", "exfil_wget"),
     ("cat .env|credentials|.netrc|.pgpass|.npmrc|.pypirc", "read_secrets"),
-    # 后门
+    # Backdoor
     ("authorized_keys|~/.ssh", "ssh_backdoor"),
-    # ... 共 12 种
+    # ... 12 types in total
 ]
 ```
 
-### 系统提示格式化
+### System Prompt Formatting
 
 ```text
 ════════════════════════════════════════════════════
 MEMORY (your personal notes) [65% — 1,430/2,200 chars]
 ════════════════════════════════════════════════════
-条目 1
+Entry 1
 §
-条目 2
+Entry 2
 ```
 
-### MemoryStore 核心 API
+### MemoryStore Core API
 
-| 方法 | 行为 |
-|------|------|
-| `load_from_disk()` | 读取文件 → 去重 → 捕获冻结快照 |
-| `add(target, content)` | 安全扫描 → 查重 → 检查字符限制 → 追加 → 持久化 |
-| `replace(target, old_text, new_content)` | 子串匹配旧条目 → 替换 → 安全扫描 → 持久化 |
-| `remove(target, old_text)` | 子串匹配 → 删除 → 持久化 |
-| `format_for_system_prompt(target)` | 返回**冻结快照**（非实时状态） |
+| Method                       | Behavior                                         |
+|------------------------------|--------------------------------------------------|
+| `load_from_disk()`           | Reads file → Deduplicates → Captures frozen snapshot |
+| `add(target, content)`       | Security scan → Deduplicates → Checks character limit → Appends → Persists |
+| `replace(target, old_text, new_content)` | Substring matches old entry → Replaces → Security scan → Persists |
+| `remove(target, old_text)`   | Substring matches → Deletes → Persists             |
+| `format_for_system_prompt(target)` | Returns **frozen snapshot** (not real-time state) |
 
 ---
 
-## 二、编排层：MemoryManager
+## 2. Orchestration Layer: MemoryManager
 
-文件路径：`agent/memory_manager.py`（367 行）
+File path: `agent/memory_manager.py` (367 lines)
 
-### 核心约束
+### Core Constraints
 
 ```python
 class MemoryManager:
     def __init__(self):
         self._providers: List[MemoryProvider] = []
-        self._tool_to_provider: Dict[str, MemoryProvider] = {}  # 工具名 → provider 路由
-        self._has_external: bool = False  # 至多一个外部 provider
+        self._tool_to_provider: Dict[str, MemoryProvider] = {}  # Tool name → provider routing
+        self._has_external: bool = False  # At most one external provider
 ```
 
-**"内置 + 至多一个外部"规则**：`add_provider()` 会拒绝第二个非 builtin provider，并打印警告。
+**"Built-in + At most one external" Rule**: `add_provider()` will reject a second non-builtin provider and print a warning.
 
-### 编排方法
+### Orchestration Methods
 
-| 方法 | 行为 |
-|------|------|
-| `build_system_prompt()` | 收集所有 provider 的 `system_prompt_block()` 拼接 |
-| `prefetch_all(query)` | 合并所有 provider 的 `prefetch()` 结果 |
-| `queue_prefetch_all(query)` | 通知所有 provider 后台预取下一轮上下文 |
-| `sync_all(user, assistant)` | 将完成的 turn 同步到所有 provider |
-| `get_all_tool_schemas()` | 合并所有 provider 工具 schema（按名去重） |
-| `handle_tool_call(name, args)` | 通过 `_tool_to_provider` 路由到正确 provider |
-| `has_tool(name)` | 检查是否有 provider 处理该工具 |
+| Method                        | Behavior                                           |
+|-------------------------------|----------------------------------------------------|
+| `build_system_prompt()`       | Collects and concatenates `system_prompt_block()` from all providers |
+| `prefetch_all(query)`         | Merges `prefetch()` results from all providers     |
+| `queue_prefetch_all(query)`   | Notifies all providers to prefetch context for the next turn in the background |
+| `sync_all(user, assistant)`   | Synchronizes completed turn to all providers       |
+| `get_all_tool_schemas()`      | Merges all provider tool schemas (deduplicates by name) |
+| `handle_tool_call(name, args)`| Routes to the correct provider via `_tool_to_provider` |
+| `has_tool(name)`              | Checks if any provider handles the tool            |
 
-### 生命周期钩子
+### Lifecycle Hooks
 
-所有钩子**广播给全部 provider**，每个 provider 的失败被隔离（try/except，不传播）：
+All hooks are **broadcast to all providers**, with each provider's failure isolated (try/except, does not propagate):
 
-| 钩子 | 触发时机 | 用途 |
-|------|---------|------|
-| `on_turn_start(turn_number, message)` | 每轮开始前 | 轮次计数、scope 管理 |
-| `on_session_end(messages)` | 会话结束 | 提取持久事实、flush 队列 |
-| `on_pre_compress(messages)` | 上下文压缩前 | 抢救即将被压缩掉的信息 |
-| `on_memory_write(action, target, content)` | 内置 memory 工具写入后 | **仅通知外部 provider**（跳过 builtin），镜像写入 |
-| `on_delegation(task, result)` | 子代理完成后 | 父 Agent 观察委派结果 |
+| Hook                                | Trigger Time              | Purpose                                       |
+|-------------------------------------|---------------------------|-----------------------------------------------|
+| `on_turn_start(turn_number, message)` | Before each turn starts   | Turn counting, scope management               |
+| `on_session_end(messages)`          | Session ends              | Extracts persistent facts, flushes queues     |
+| `on_pre_compress(messages)`         | Before context compression| Rescues information about to be compressed    |
+| `on_memory_write(action, target, content)`| After built-in memory tool writes | **Only notifies external providers** (skips builtin), mirrors write |
+| `on_delegation(task, result)`       | After sub-agent completes | Parent Agent observes delegation results      |
 
 ### Memory Context Fence
 
 ```python
 def build_memory_context_block(raw_context: str) -> str:
-    # 用 <memory-context> 标签包裹，防止模型把召回内容当作用户输入
+    # Wraps with <memory-context> tag to prevent the model from interpreting recalled content as user input
     return f"<memory-context>\n{sanitized}\n</memory-context>"
 ```
 
 ---
 
-## 三、插件层：MemoryProvider ABC
+## 3. Plugin Layer: MemoryProvider ABC
 
-文件路径：`agent/memory_provider.py`（232 行）
+File path: `agent/memory_provider.py` (232 lines)
 
-### 抽象接口
+### Abstract Interface
 
 ```python
 class MemoryProvider(ABC):
-    # 必须实现
+    # Must be implemented
     @abstractmethod
     def name(self) -> str: ...              # "builtin", "honcho", "mem0"
     @abstractmethod
-    def is_available(self) -> bool: ...     # 无网络调用的快速检查
+    def is_available(self) -> bool: ...     # Quick check without network calls
     @abstractmethod
-    def initialize(self, session_id, **kwargs): ...  # 会话初始化
+    def initialize(self, session_id, **kwargs): ...  # Session initialization
     @abstractmethod
-    def get_tool_schemas(self) -> List[Dict]: ...    # 暴露给 LLM 的工具
+    def get_tool_schemas(self) -> List[Dict]: ...    # Tools exposed to LLM
 
-    # 可选覆盖（默认 no-op）
-    def system_prompt_block(self) -> str: ...     # 注入系统提示的静态文本
-    def prefetch(self, query) -> str: ...         # 每轮前的快速召回
-    def queue_prefetch(self, query): ...          # 后台预取
-    def sync_turn(self, user, assistant): ...     # 持久化已完成 turn
-    def handle_tool_call(self, name, args) -> str: ...  # 处理工具调用
-    def shutdown(self): ...                       # 清理资源
+    # Optional to override (default no-op)
+    def system_prompt_block(self) -> str: ...     # Static text injected into system prompt
+    def prefetch(self, query) -> str: ...         # Quick recall before each turn
+    def queue_prefetch(self, query): ...          # Background prefetch
+    def sync_turn(self, user, assistant): ...     # Persists completed turn
+    def handle_tool_call(self, name, args) -> str: ...  # Handles tool call
+    def shutdown(self): ...                       # Cleans up resources
     def on_turn_start(self, turn_number, message): ...
     def on_session_end(self, messages): ...
     def on_pre_compress(self, messages) -> str: ...
@@ -205,43 +205,43 @@ class MemoryProvider(ABC):
     def on_session_switch(self, new_session_id, parent_session_id, reset, **kw): ...  # v2026.4.23+
 ```
 
-### `on_session_switch` — Session ID 中途切换通知（v2026.4.23+）
+### `on_session_switch` — Session ID Mid-Session Switch Notification (v2026.4.23+)
 
-之前 provider 只在初始化时收到一次 `session_id`。但 `session_id` 会在 `/resume`、`/branch`、`/reset`、`/new`、上下文压缩等场景被**重新分配**——provider 不知道，后续写入会落到错误的 session 记录里。
+Previously, providers only received `session_id` once during initialization. However, `session_id` can be **reassigned** in scenarios like `/resume`, `/branch`, `/reset`, `/new`, or context compression—providers were unaware, leading to subsequent writes falling into incorrect session records.
 
-`agent/memory_manager.py:on_session_switch()` 现在会在 session_id 改变时调用所有 provider 的 `on_session_switch(new_session_id, parent_session_id, reset, **kwargs)`，让 provider 刷新缓存的 per-session 状态。Provider 不需要 tear down 重建，只需要更新内部句柄。错误会被 swallow（log debug 不阻塞主流程）。
+`agent/memory_manager.py:on_session_switch()` now calls `on_session_switch(new_session_id, parent_session_id, reset, **kwargs)` for all providers when the session_id changes, allowing providers to refresh their cached per-session state. Providers do not need to tear down and rebuild; they only need to update their internal handles. Errors will be swallowed (logged as debug, does not block the main flow).
 
-### initialize() 的 kwargs
+### `initialize()` kwargs
 
-**始终提供**：`hermes_home`（HERMES_HOME 路径）、`platform`（"cli"/"telegram"/"discord"...）
+**Always provided**: `hermes_home` (HERMES_HOME path), `platform` ("cli"/"telegram"/"discord"...)
 
-**可能提供**：`agent_context`（"primary"/"subagent"/"cron"/"flush"）、`agent_identity`（profile 名）、`agent_workspace`（共享工作区名）、`parent_session_id`（子代理的父 session）、`user_id`（平台用户 ID）
+**Potentially provided**: `agent_context` ("primary"/"subagent"/"cron"/"flush"), `agent_identity` (profile name), `agent_workspace` (shared workspace name), `parent_session_id` (parent session for sub-agents), `user_id` (platform user ID)
 
-### 8 个可用插件
+### 8 Available Plugins
 
-| 插件          | 路径                                           |
-| ----------- | -------------------------------------------- |
-| honcho      | `plugins/memory/honcho/` — Honcho AI 辩证式用户建模 |
-| mem0        | `plugins/memory/mem0/`                       |
-| hindsight   | `plugins/memory/hindsight/`                  |
-| holographic | `plugins/memory/holographic/`                |
-| openviking  | `plugins/memory/openviking/`                 |
-| retaindb    | `plugins/memory/retaindb/`                   |
-| supermemory | `plugins/memory/supermemory/`                |
-| byterover   | `plugins/memory/byterover/`                  |
+| Plugin        | Path                                           |
+|---------------|------------------------------------------------|
+| honcho        | `plugins/memory/honcho/` — Honcho AI dialectical user modeling |
+| mem0          | `plugins/memory/mem0/`                       |
+| hindsight     | `plugins/memory/hindsight/`                  |
+| holographic   | `plugins/memory/holographic/`                |
+| openviking    | `plugins/memory/openviking/`                 |
+| retaindb      | `plugins/memory/retaindb/`                   |
+| supermemory   | `plugins/memory/supermemory/`                |
+| byterover     | `plugins/memory/byterover/`                  |
 
-插件发现机制：扫描 `plugins/memory/` 目录，找到含 `__init__.py` 的子目录，调用 `is_available()` 快速检查。
+Plugin discovery mechanism: Scans the `plugins/memory/` directory, finds subdirectories containing `__init__.py`, and calls `is_available()` for a quick check.
 
 ---
 
-## 四、Agent 集成链路
+## 4. Agent Integration Flow
 
-### Memory 工具的特殊拦截
+### Special Interception for Memory Tools
 
-Memory 工具**不在 tool registry 中**。它在 `run_agent.py` 中被显式拦截：
+Memory tools are **not in the tool registry**. They are explicitly intercepted in `run_agent.py`:
 
 ```python
-# run_agent.py:6078-6100 — 特殊分支，不走 registry.dispatch()
+# run_agent.py:6078-6100 — Special branch, does not go through registry.dispatch()
 elif function_name == "memory":
     result = memory_tool(
         action=args.get("action"),
@@ -250,179 +250,179 @@ elif function_name == "memory":
         old_text=args.get("old_text"),
         store=self._memory_store,
     )
-    # 通知外部 provider 镜像写入
+    # Notify external providers to mirror the write
     if self._memory_manager and args.get("action") in ("add", "replace"):
         self._memory_manager.on_memory_write(action, target, content)
 ```
 
-**为什么不走 registry？** 因为 memory 工具需要直接访问 `self._memory_store` 实例，而 registry 的 handler 签名不传 agent 内部状态。
+**Why not use the registry?** Because memory tools require direct access to the `self._memory_store` instance, and the registry's handler signature does not pass internal agent state.
 
-### 完整生命周期
+### Full Lifecycle
 
 ```text
-会话启动
+Session Start
     │
-    ├── MemoryStore.load_from_disk() → 冻结快照
+    ├── MemoryStore.load_from_disk() → Frozen snapshot
     ├── MemoryManager.add_provider(builtin)
-    ├── MemoryManager.add_provider(honcho)  ← 如果配置了
+    ├── MemoryManager.add_provider(honcho)  ← If configured
     ├── provider.initialize(session_id, hermes_home=..., platform=...)
-    └── 系统提示 = builtin.system_prompt_block() + external.system_prompt_block()
+    └── System Prompt = builtin.system_prompt_block() + external.system_prompt_block()
 
-每轮对话
+Each Conversation Turn
     │
-    ├── [API 调用前]
-    │   ├── prefetch_all(user_message) → 合并所有 provider 召回
-    │   └── 用 <memory-context> fence 包裹 → 注入到当前 turn 的用户消息中
-    │       （临时注入，不修改原始消息，不持久化到 session）
+    ├── [Before API Call]
+    │   ├── prefetch_all(user_message) → Merges all provider recalls
+    │   └── Wraps with <memory-context> fence → Injects into current turn's user message
+    │       (Temporary injection, does not modify original message, not persisted to session)
     │
-    ├── [工具调用]
-    │   ├── "memory" → 特殊拦截 → MemoryStore.add/replace/remove
-    │   │                        → on_memory_write() 通知外部 provider
-    │   └── "honcho_*" 等 → MemoryManager.handle_tool_call() → 路由到外部 provider
+    ├── [Tool Call]
+    │   ├── "memory" → Special interception → MemoryStore.add/replace/remove
+    │   │                        → on_memory_write() Notifies external providers
+    │   └── "honcho_*" etc. → MemoryManager.handle_tool_call() → Routes to external provider
     │
-    └── [API 调用后]
-        ├── sync_all(user_message, assistant_response) → 持久化到所有 provider
-        └── queue_prefetch_all(user_message) → 后台预取下一轮上下文
+    └── [After API Call]
+        ├── sync_all(user_message, assistant_response) → Persists to all providers
+        └── queue_prefetch_all(user_message) → Background prefetch for next turn context
 
-上下文压缩前
+Before Context Compression
     │
-    ├── flush_memories(messages) → 让模型把重要信息写入 memory
-    └── on_pre_compress(messages) → 通知外部 provider 抢救信息
+    ├── flush_memories(messages) → Prompts model to write important information to memory
+    └── on_pre_compress(messages) → Notifies external providers to rescue information
 
-会话结束
+Session End
     │
-    ├── on_session_end(messages) → 全量历史交给 provider
-    └── shutdown_all() → 清理资源
+    ├── on_session_end(messages) → Full history handed to providers
+    └── shutdown_all() → Cleans up resources
 ```
 
-### 后台记忆 Review
+### Background Memory Review
 
-系统每 10 轮（`_memory_nudge_interval`）自动触发一次后台 review：
+The system automatically triggers a background review every 10 turns (`_memory_nudge_interval`):
 
 ```python
-# run_agent.py — 轮次计数器
+# run_agent.py — Turn counter
 self._turns_since_memory += 1
 if self._turns_since_memory >= 10:
-    _should_review_memory = True  # 在主循环结束后触发 _spawn_background_review()
+    _should_review_memory = True  # Triggers _spawn_background_review() after the main loop ends
 ```
 
-Review Agent 以 `_MEMORY_REVIEW_PROMPT` 审视对话历史，自动调用 memory 工具提取持久事实。
+The Review Agent examines conversation history with `_MEMORY_REVIEW_PROMPT` and automatically calls memory tools to extract persistent facts.
 
 ---
 
-## 五、LLM 看到的 Memory 工具
+## 5. Memory Tools as Seen by LLM
 
 ```python
-# tools/memory_tool.py:489-538 — 工具 schema
+# tools/memory_tool.py:489-538 — Tool schema
 {
     "name": "memory",
     "description": "Save durable facts about the user or environment...",
     "parameters": {
         "action": "add | replace | remove",
         "target": "memory | user",
-        "content": "要添加/替换的内容",
-        "old_text": "要匹配的旧文本（replace/remove 时必填）"
+        "content": "Content to add/replace",
+        "old_text": "Old text to match (required for replace/remove)"
     }
 }
 ```
 
-系统提示中的指导（`prompt_builder.py:144-156`）：
+Guidance in system prompt (`prompt_builder.py:144-156`):
 
 ```text
 MEMORY_GUIDANCE:
-- 保存用户偏好、环境细节、工具特性、稳定约定
-- 优先保存"能减少用户未来纠正"的信息
-- 不要保存：任务进度、会话结果、完成的工作日志、临时 TODO
-- 发现新方法？用 skill 工具保存，不用 memory
+- Save user preferences, environment details, tool characteristics, stable conventions
+- Prioritize saving information that "reduces future user corrections"
+- Do NOT save: task progress, session outcomes, completed work logs, temporary TODOs
+- Discovered a new method? Save with the skill tool, not memory
 ```
 
 ---
 
-## 六、配置
+## 6. Configuration
 
 ```yaml
 # config.yaml
 memory:
-  memory_enabled: true           # 启用 MEMORY.md（默认 false）
-  user_profile_enabled: true     # 启用 USER.md（默认 false）
-  memory_char_limit: 2200        # MEMORY.md 字符上限
-  user_char_limit: 1375          # USER.md 字符上限
-  nudge_interval: 10             # 多少轮触发一次后台 memory review
-  flush_min_turns: 6             # 压缩前至少经过多少轮才允许 flush
-  provider: honcho               # 外部 provider 名称（可选）
+  memory_enabled: true           # Enable MEMORY.md (default false)
+  user_profile_enabled: true     # Enable USER.md (default false)
+  memory_char_limit: 2200        # MEMORY.md character limit
+  user_char_limit: 1375          # USER.md character limit
+  nudge_interval: 10             # How many turns before triggering a background memory review
+  flush_min_turns: 6             # Minimum number of turns before flushing is allowed prior to compression
+  provider: honcho               # External provider name (optional)
 ```
 
 ---
 
-## 七、设计要点
+## 7. Design Principles
 
-### 失败隔离
+### Failure Isolation
 
-MemoryManager 中每个 provider 方法调用都在 try/except 中。一个 provider 崩溃不影响其他 provider，不阻塞 Agent 执行。
+Each provider method call in MemoryManager is wrapped in a try/except block. A provider crash does not affect other providers and does not block Agent execution.
 
-### 内置 memory 写入镜像
+### Built-in Memory Write Mirroring
 
-当 LLM 调用 `memory(action="add", target="user", content="用户偏好暗色模式")` 时：
-1. MemoryStore 写入 `USER.md`（本地文件）
-2. `on_memory_write("add", "user", "用户偏好暗色模式")` 通知外部 provider
-3. 外部 provider（如 Honcho）可以将此事实同步到自己的后端
+When the LLM calls `memory(action="add", target="user", content="User prefers dark mode")`:
+1. MemoryStore writes to `USER.md` (local file)
+2. `on_memory_write("add", "user", "User prefers dark mode")` notifies external providers
+3. External providers (e.g., Honcho) can synchronize this fact to their own backend.
 
-**仅 add 和 replace 触发镜像，remove 不触发。**
+**Only `add` and `replace` trigger mirroring; `remove` does not.**
 
-### 预取缓存
+### Prefetch Cache
 
-`prefetch_all()` 在每次 API 调用前调用一次，结果缓存到 `_ext_prefetch_cache`。同一轮内多次 tool call 不会重复预取（避免 10 次工具调用 = 10 倍延迟）。
+`prefetch_all()` is called once before each API call, and the results are cached in `_ext_prefetch_cache`. Multiple tool calls within the same turn will not trigger duplicate prefetches (avoiding 10x latency for 10 tool calls).
 
 ---
 
-## 八、FAQ
+## 8. FAQ
 
-### Q1：冻结快照下，当前会话怎么看到刚写入的记忆？
+### Q1: Under frozen snapshot mode, how does the current session see newly written memories?
 
-**通过工具返回值兜底。** 每次 `memory(action="add/replace/remove")` 调用后，返回值包含**实时的全部条目**：
+**Through tool return values as a fallback.** After each `memory(action="add/replace/remove")` call, the return value includes **all real-time entries**:
 
 ```json
 {
   "success": true,
-  "entries": ["条目1", "条目2", "刚新增的条目3"],
+  "entries": ["Entry 1", "Entry 2", "Newly added Entry 3"],
   "usage": "65% — 1,430/2,200 chars",
   "entry_count": 3
 }
 ```
 
-模型在对话上下文中已经能看到最新内容，不需要系统提示更新。
+The model can already see the latest content in the conversation context; the system prompt does not need to be updated.
 
 ```text
-Turn 1:  系统提示包含冻结快照 [条目1, 条目2]
-Turn 3:  LLM 调用 memory(add, "条目3")
-         → 返回值包含 [条目1, 条目2, 条目3]  ← 模型能看到
-Turn 5:  LLM 调用 memory(replace, old="条目1", new="更新的条目1")
-         → 返回值包含 [更新的条目1, 条目2, 条目3]
+Turn 1:  System prompt contains frozen snapshot [Entry 1, Entry 2]
+Turn 3:  LLM calls memory(add, "Entry 3")
+         → Return value contains [Entry 1, Entry 2, Entry 3]  ← Model sees this
+Turn 5:  LLM calls memory(replace, old="Entry 1", new="Updated Entry 1")
+         → Return value contains [Updated Entry 1, Entry 2, Entry 3]
 
-系统提示始终显示 [条目1, 条目2]  ← 冻结不变，保护 prefix cache
-对话上下文里有完整实时状态        ← 功能不受影响
+System prompt always displays [Entry 1, Entry 2]  ← Frozen, protects prefix cache
+Conversation context has full real-time state        ← Functionality unaffected
 ```
 
-### Q2：超过字符限制会怎样？
+### Q2: What happens if the character limit is exceeded?
 
-**硬拒绝 + 返回当前条目让模型自己管理空间。** 没有自动淘汰、没有 LRU、没有溢出。
+**Hard rejection + returns current entries for the model to manage space itself.** No automatic eviction, no LRU, no overflow.
 
 ```json
 {
   "success": false,
   "error": "Memory at 2,100/2,200 chars. Adding this entry (200 chars) would exceed the limit. Replace or remove existing entries first.",
-  "current_entries": ["条目1", "条目2", "条目3"],
+  "current_entries": ["Entry 1", "Entry 2", "Entry 3"],
   "usage": "2,100/2,200"
 }
 ```
 
-**设计意图**：Memory 不是数据库，是**精心策展的小卡片盒**。限制空间逼模型做策展 — 过时的 replace、不重要的 remove、新发现的 add。
+**Design intent**: Memory is not a database; it's a **carefully curated small card box**. Limited space forces the model to curate — replacing outdated entries, removing unimportant ones, adding new discoveries.
 
-### Q3：更多历史信息怎么办？
+### Q3: What about more historical information?
 
-Memory 只存**持久事实**（2200 + 1375 字符）。更大量的历史信息通过 **session_search 工具**检索。
+Memory only stores **persistent facts** (2200 + 1375 characters). Larger volumes of historical information are retrieved via the **session_search tool**.
 
-两者分工明确，系统提示里显式指导模型：
+Their division of labor is clear, with explicit guidance in the system prompt for the model:
 
 ```text
 MEMORY_GUIDANCE:
@@ -432,59 +432,59 @@ MEMORY_GUIDANCE:
 
 ---
 
-## 九、与 Session Search 的关系
+## 9. Relationship with Session Search
 
-Session Search 不是 Memory 的一部分，但是 Memory 系统的**互补机制**。
+Session Search is not part of Memory, but it is a **complementary mechanism** to the Memory system.
 
-|          | Memory 工具          | Session Search 工具                        |
-| -------- | ------------------ | ---------------------------------------- |
-| **存什么**  | 持久事实（偏好、环境、约定）     | 所有历史对话原文                                 |
-| **容量**   | 2200 + 1375 字符（有限） | 无限（SQLite，所有会话）                          |
-| **检索方式** | 无检索（直接注入系统提示）      | FTS5 关键词检索 + LLM 摘要                      |
-| **写入方**  | LLM 主动调用 memory 工具 | 自动（每轮对话自动持久化到 SQLite）                    |
-| **读取成本** | 零（冻结快照在系统提示里）      | FTS5 查询 + Gemini Flash 摘要（每个会话一次 LLM 调用） |
+|                   | Memory Tool                    | Session Search Tool                      |
+|-------------------|--------------------------------|------------------------------------------|
+| **What it stores**| Persistent facts (preferences, environment, conventions) | All raw historical dialogue              |
+| **Capacity**      | 2200 + 1375 characters (limited) | Unlimited (SQLite, all sessions)         |
+| **Retrieval Method** | No retrieval (directly injected into system prompt) | FTS5 keyword search + LLM summarization  |
+| **Writer**        | LLM actively calls memory tool | Automatic (each turn automatically persisted to SQLite) |
+| **Read Cost**     | Zero (frozen snapshot in system prompt) | FTS5 query + Gemini Flash summarization (one LLM call per session) |
 
-### Session Search 的工作流程
+### Session Search Workflow
 
 ```text
-session_search(query="nginx 配置")
+session_search(query="nginx configuration")
         │
   ┌─────▼──────┐
-  │ FTS5 检索   │  BM25 排序，取 top 50 条匹配消息
+  │ FTS5 Search   │  BM25 ranking, retrieves top 50 matching messages
   └─────┬──────┘
         │
-  按 session 分组 → 去重 → 排除当前会话 → 取 top 3
+  Groups by session → Deduplicates → Excludes current session → Takes top 3
         │
   ┌─────▼──────────────────┐
-  │ LLM 摘要（并行）         │  每个会话截取匹配位置 ±50K 字符
-  │ Gemini Flash, temp=0.1  │  生成聚焦于搜索词的结构化摘要
+  │ LLM Summarization (Parallel)         │  Each session truncates ±50K characters around match location
+  │ Gemini Flash, temp=0.1  │  Generates structured summaries focused on search terms
   └─────┬──────────────────┘
         │
-  返回 per-session 摘要（不是原始对话文本）
+  Returns per-session summaries (not raw dialogue text)
 ```
 
-**注意**：Session Search 是 FTS5 关键词匹配，不是语义向量搜索。搜 "nginx 配置" 不会匹配只写了 "反向代理" 的会话。搜索语法支持 `OR`、`NOT`、`"精确短语"`、`前缀*`。
+**Note**: Session Search is FTS5 keyword matching, not semantic vector search. Searching "nginx configuration" will not match sessions that only mention "reverse proxy". Search syntax supports `OR`, `NOT`, `"exact phrase"`, `prefix*`.
 
-两种模式：
-- **空 query** → 列出最近会话（零 LLM 成本，只返回标题/预览/时间戳）
-- **有 query** → FTS5 搜索 + 并行 LLM 摘要（最多 3-5 个会话）
+Two modes:
+- **Empty query** → Lists recent sessions (zero LLM cost, only returns title/preview/timestamp)
+- **Query provided** → FTS5 search + parallel LLM summarization (max 3-5 sessions)
 
-## 相关页面
+## Related Pages
 
-- [[memory-system-architecture]] — MemoryStore 核心类详细 API（本页）
-- [[security-defense-system]] — 记忆内容安全扫描
-- [[skills-and-memory-interaction]] — 技能与记忆的交互决策树
-- [[context-compressor-architecture]] — 压缩前 flush_memories 和 on_pre_compress
-- [[prompt-caching-optimization]] — 冻结快照如何保护 prefix cache
-- [[session-search-and-sessiondb]] — Session Search 工具（FTS5 + LLM 摘要）
+- [[memory-system-architecture]] — MemoryStore Core Class Detailed API (this page)
+- [[security-defense-system]] — Memory Content Security Scan
+- [[skills-and-memory-interaction]] — Skills and Memory Interaction Decision Tree
+- [[context-compressor-architecture]] — `flush_memories` and `on_pre_compress` Before Compression
+- [[prompt-caching-optimization]] — How Frozen Snapshots Protect Prefix Cache
+- [[session-search-and-sessiondb]] — Session Search Tool (FTS5 + LLM Summarization)
 
-## 相关文件
+## Related Files
 
-- `tools/memory_tool.py` — MemoryStore 类 + memory 工具 schema（561 行）
-- `agent/memory_manager.py` — MemoryManager 编排层（367 行）
-- `agent/memory_provider.py` — MemoryProvider ABC 接口（232 行）
-- `agent/builtin_memory_provider.py` — 内置 Provider（114 行）
-- `plugins/memory/` — 8 个外部 Provider 插件
-- `run_agent.py` — Agent 集成（工具拦截、prefetch、sync、flush）
-- `agent/prompt_builder.py` — MEMORY_GUIDANCE 系统提示
-- `tools/session_search_tool.py` — Session Search 工具（FTS5 + LLM 摘要，505 行）
+- `tools/memory_tool.py` — MemoryStore class + memory tool schema (561 lines)
+- `agent/memory_manager.py` — MemoryManager orchestration layer (367 lines)
+- `agent/memory_provider.py` — MemoryProvider ABC interface (232 lines)
+- `agent/builtin_memory_provider.py` — Built-in Provider (114 lines)
+- `plugins/memory/` — 8 external Provider plugins
+- `run_agent.py` — Agent integration (tool interception, prefetch, sync, flush)
+- `agent/prompt_builder.py` — MEMORY_GUIDANCE system prompt
+- `tools/session_search_tool.py` — Session Search tool (FTS5 + LLM summarization, 505 lines)

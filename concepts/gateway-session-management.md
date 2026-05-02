@@ -1,5 +1,5 @@
 ---
-title: Gateway Session 会话管理架构
+title: Gateway Session Management Architecture
 created: 2026-04-08
 updated: 2026-04-08
 type: concept
@@ -7,99 +7,99 @@ tags: [architecture, module, component, gateway, session-store, multi-platform]
 sources: [gateway/session.py, gateway/config.py]
 ---
 
-# Gateway Session — 网关会话管理架构
+# Gateway Session — Gateway Session Management Architecture
 
-## 概述
+## Overview
 
-Gateway Session 位于 `gateway/session.py`（44KB/1081行），管理网关的**会话生命周期**：会话上下文追踪、消息持久化、重置策略评估、动态系统提示注入。
+The Gateway Session, located at `gateway/session.py` (44KB/1081 lines), manages the gateway's **session lifecycle**: session context tracking, message persistence, reset policy evaluation, and dynamic system prompt injection.
 
-核心理念：**每个平台/用户/线程的组合都有独立的会话，会话知道它从哪里来、要到哪里去。**
+Core philosophy: **Each combination of platform/user/thread has an independent session, and the session knows its origin and destination.**
 
-## 架构原理
+## Architectural Principles
 
-### 核心数据模型
+### Core Data Model
 
 ```text
-SessionSource (消息来源)
+SessionSource (Message Source)
     ↓
-SessionContext (完整会话上下文)
+SessionContext (Complete Session Context)
     ↓
-SessionEntry (会话存储条目)
+SessionEntry (Session Storage Entry)
     ↓
-SessionStore (会话存储管理器)
+SessionStore (Session Store Manager)
 ```
 
-### SessionSource — 消息来源描述
+### SessionSource — Message Source Description
 
 ```python
 @dataclass
 class SessionSource:
     platform: Platform           # telegram, discord, slack, whatsapp...
-    chat_id: str                 # 聊天 ID
-    chat_name: Optional[str]     # 聊天名称
+    chat_id: str                 # Chat ID
+    chat_name: Optional[str]     # Chat Name
     chat_type: str               # "dm", "group", "channel", "thread"
-    user_id: Optional[str]       # 用户 ID
-    user_name: Optional[str]     # 用户名称
-    thread_id: Optional[str]     # 线程/话题 ID
-    chat_topic: Optional[str]    # 频道主题
-    user_id_alt: Optional[str]   # Signal UUID 等备用 ID
-    chat_id_alt: Optional[str]   # Signal 群内部 ID
+    user_id: Optional[str]       # User ID
+    user_name: Optional[str]     # User Name
+    thread_id: Optional[str]     # Thread/Topic ID
+    chat_topic: Optional[str]    # Channel Topic
+    user_id_alt: Optional[str]   # Alternate ID like Signal UUID
+    chat_id_alt: Optional[str]   # Signal Group Internal ID
 ```
 
-**多平台适配**：不同平台使用不同的 ID 格式（Telegram 用数字 ID，Signal 用 UUID + 群内部 ID），SessionSource 统一抽象。
+**Multi-Platform Adaptation**: Different platforms use different ID formats (Telegram uses numeric IDs, Signal uses UUID + internal group IDs), which SessionSource uniformly abstracts.
 
-### SessionKey 构建规则
+### SessionKey Construction Rules
 
 ```python
 def build_session_key(source, group_sessions_per_user=True, thread_sessions_per_user=False):
     """
-    DM 会话:
+    DM Session:
     → agent:main:{platform}:dm:{chat_id}
-    → agent:main:{platform}:dm:{chat_id}:{thread_id}  (带线程)
+    → agent:main:{platform}:dm:{chat_id}:{thread_id}  (with thread)
     
-    群组会话:
-    → agent:main:{platform}:group:{chat_id}:{user_id}  (按用户隔离)
-    → agent:main:{platform}:group:{chat_id}            (共享会话)
+    Group Session:
+    → agent:main:{platform}:group:{chat_id}:{user_id}  (per-user isolation)
+    → agent:main:{platform}:group:{chat_id}            (shared session)
     
-    线程会话:
-    → agent:main:{platform}:thread:{chat_id}:{thread_id}  (默认共享)
+    Thread Session:
+    → agent:main:{platform}:thread:{chat_id}:{thread_id}  (shared by default)
     → agent:main:{platform}:thread:{chat_id}:{thread_id}:{user_id}  (per-user)
     """
 ```
 
-**设计考量**：
-- DM 会话：按聊天隔离，确保私人对话独立
-- 群组会话：默认按用户隔离（每个用户有自己的对话）
-- 线程会话：默认共享（所有参与者看到同一对话），可通过 `thread_sessions_per_user` 启用隔离
+**Design Considerations**:
+- DM sessions: Isolated by chat to ensure private conversations are independent.
+- Group sessions: Isolated per user by default (each user has their own conversation).
+- Thread sessions: Shared by default (all participants see the same conversation), but per-user isolation can be enabled via `thread_sessions_per_user`.
 
-### PII 脱敏
+### PII Redaction
 
 ```python
 _PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
 
 def _hash_id(value: str) -> str:
-    """确定性 12 字符十六进制哈希"""
+    """Deterministic 12-character hexadecimal hash"""
     return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 def _hash_sender_id(value: str) -> str:
     return f"user_{_hash_id(value)}"
 
 def _hash_chat_id(value: str) -> str:
-    """保留平台前缀: telegram:12345 → telegram:<hash>"""
+    """Retains platform prefix: telegram:12345 → telegram:<hash>"""
     colon = value.find(":")
     if colon > 0:
         return f"{value[:colon]}:{_hash_id(value[colon+1:])}"
     return _hash_id(value)
 ```
 
-**Discord 例外**：Discord 使用 `<@user_id>` 提及系统，LLM 需要真实 ID 才能 @ 用户，因此 Discord 不在 `_PII_SAFE_PLATFORMS` 中。
+**Discord Exception**: Discord uses the `<@user_id>` mention system. The LLM requires the actual ID to mention users, hence Discord is not included in `_PII_SAFE_PLATFORMS`.
 
-### SessionContext — 动态系统提示注入
+### SessionContext — Dynamic System Prompt Injection
 
 ```python
 def build_session_context_prompt(context, redact_pii=False):
     """
-    生成注入到系统提示的上下文信息:
+    Generates context information injected into the system prompt:
     
     ## Current Session Context
     **Source:** Telegram (DM with lnisang La)
@@ -113,7 +113,7 @@ def build_session_context_prompt(context, redact_pii=False):
     """
 ```
 
-**平台特定行为提示**：
+**Platform-Specific Behavior Hints**:
 
 ```python
 if platform == SLACK:
@@ -122,50 +122,50 @@ elif platform == DISCORD:
     "You do NOT have access to Discord-specific APIs..."
 ```
 
-防止 Agent 承诺执行无法完成的操作。
+Prevents the Agent from committing to actions it cannot complete.
 
-### SessionStore — 会话存储管理器
+### SessionStore — Session Storage Manager
 
 ```python
 class SessionStore:
     def __init__(self, sessions_dir, config):
-        # 优先使用 SQLite (SessionDB)
-        # 回退到 JSONL 文件
-        self._db = SessionDB()  # 如果可用
+        # Prioritize SQLite (SessionDB)
+        # Fallback to JSONL files
+        self._db = SessionDB()  # if available
 ```
 
-**双存储策略**：
-1. **SQLite**（优先）：通过 `hermes_state.SessionDB`，支持 FTS5 全文搜索
-2. **JSONL**（回退）：简单的 JSON 文件存储
+**Dual Storage Strategy**:
+1.  **SQLite** (preferred): Via `hermes_state.SessionDB`, supports FTS5 full-text search.
+2.  **JSONL** (fallback): Simple JSON file storage.
 
-### 会话重置策略
+### Session Reset Policy
 
 ```python
 def _is_session_expired(self, entry):
     """
-    检查会话是否过期:
-    1. 检查是否有活跃后台进程（有则不过期）
-    2. 获取平台/聊天类型的重置策略
-    3. 检查 idle 超时或 daily 重置
+    Checks if the session has expired:
+    1. Check for active background processes (if present, session does not expire)
+    2. Retrieve the reset policy for the platform/chat type
+    3. Check for idle timeout or daily reset
     """
 ```
 
-**后台过期监控**：
+**Background Expiration Monitoring**:
 
 ```python
-# 当会话过期时:
+# When a session expires:
 entry.was_auto_reset = True
-entry.auto_reset_reason = "idle"  # 或 "daily"
+entry.auto_reset_reason = "idle"  # or "daily"
 entry.reset_had_activity = bool(entry.total_tokens > 0)
 ```
 
-下次消息到达时，网关注入通知：
+When the next message arrives, the gateway injects a notification:
 
 ```
 "⚠️ Previous session expired (idle for 24h). Starting fresh conversation."
 ```
 
-### Token 追踪
+### Token Tracking
 
 ```python
 @dataclass
@@ -177,122 +177,122 @@ class SessionEntry:
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
-    last_prompt_tokens: int = 0  # 用于压缩预检查
-    memory_flushed: bool = False  # 内存刷新标记（持久化）
+    last_prompt_tokens: int = 0  # For compression pre-check
+    memory_flushed: bool = False  # Memory flush flag (persistent)
 ```
 
-### 原子保存
+### Atomic Save
 
 ```python
 def _save(self):
-    """使用 tempfile + os.replace 原子写入 sessions.json"""
+    """Atomically writes sessions.json using tempfile + os.replace"""
     fd, tmp_path = tempfile.mkstemp(dir=sessions_dir, suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp_path, sessions_file)  # 原子替换
+    os.replace(tmp_path, sessions_file)  # Atomic replace
 ```
 
-**为什么原子写入**：防止网关崩溃时写入不完整的 sessions.json。
+**Why Atomic Write**: Prevents incomplete `sessions.json` writes in case of a gateway crash.
 
-## 设计优越性
+## Design Advantages
 
-### 会话隔离的灵活性
+### Session Isolation Flexibility
 
-| 场景 | 默认行为 | 可配置 |
+| Scenario | Default Behavior | Configurable |
 |---|---|---|
-| DM | 按聊天隔离 | 不可改 |
-| 群组 | 按用户隔离 | group_sessions_per_user=False → 共享 |
-| 线程 | 共享 | thread_sessions_per_user=True → 按用户隔离 |
+| DM | Isolated by chat | Not configurable |
+| Group | Isolated per user | `group_sessions_per_user=False` → Shared |
+| Thread | Shared | `thread_sessions_per_user=True` → Per-user isolated |
 
-### 对比简单会话管理
+### Comparison with Simple Session Management
 
-| 维度 | 简单方案 | Gateway Session |
+| Dimension | Simple Approach | Gateway Session |
 |---|---|---|
-| 多平台 | 需要手动处理 | SessionSource 统一抽象 |
-| 会话隔离 | 固定策略 | 可配置（per-user / shared）|
-| PII 保护 | 无 | 自动哈希脱敏 |
-| 上下文注入 | 无 | 动态系统提示 |
-| 重置策略 | 无 | idle/daily 自动重置 |
-| 成本追踪 | 无 | token 用量 + 成本估算 |
-| 持久化 | 内存 | SQLite + JSON 双存储 |
+| Multi-platform | Manual handling required | SessionSource uniform abstraction |
+| Session Isolation | Fixed policy | Configurable (per-user / shared) |
+| PII Protection | None | Automatic hash redaction |
+| Context Injection | None | Dynamic system prompts |
+| Reset Policy | None | Idle/daily automatic reset |
+| Cost Tracking | None | Token usage + cost estimation |
+| Persistence | In-memory | SQLite + JSON dual storage |
 
-## 配置与操作
+## Configuration and Operations
 
-### 会话重置策略
+### Session Reset Policy
 
 ```yaml
 # config.yaml
 gateway:
   reset_policy:
-    dm: idle:24h        # DM 24 小时无活动重置
-    group: daily        # 群组每日重置
-    thread: idle:12h    # 线程 12 小时无活动重置
+    dm: idle:24h        # DM resets after 24h idle
+    group: daily        # Group resets daily
+    thread: idle:12h    # Thread resets after 12h idle
 ```
 
-### 会话隔离
+### Session Isolation
 
 ```yaml
 gateway:
-  group_sessions_per_user: true    # 群组中每个用户独立会话
-  thread_sessions_per_user: false  # 线程中共享会话（默认）
+  group_sessions_per_user: true    # Independent session for each user in groups
+  thread_sessions_per_user: false  # Shared session in threads (default)
 ```
 
-### 查看活跃会话
+### Viewing Active Sessions
 
 ```python
-# 通过 gateway 内部 API
+# Via gateway internal API
 store._entries  # Dict[session_key, SessionEntry]
 ```
 
-## Agent 运行中收到新消息的处理（gateway/run.py line 1920+）
+## Handling New Messages While Agent is Running (gateway/run.py line 1920+)
 
-当同一 session 的 agent 正在执行时，用户发新消息的处理逻辑：
+Logic for handling new messages from a user when an agent for the same session is already executing:
 
 ```text
-同一 session 收到新消息
+New message received for the same session
     │
-    ├── /stop         → 硬中断：interrupt + 强制清除 _running_agents 锁，立即解锁 session
-    ├── /reset /new   → 中断 + 清空 pending queue（防旧文本重放 #2170）→ 执行 reset
-    ├── /queue <text> → 排队：不打断，等当前轮次结束后作为下一轮输入
-    ├── /status       → 不打断，直接返回当前状态
-    ├── /model        → 拒绝："Agent is running — wait or /stop first"
-    ├── /approve /deny→ 绕过中断，直接路由到审批处理器（agent 阻塞在 approval event 上）
-    ├── 照片          → 排队不打断，多张照片自动合并到同一个 pending event
-    └── 普通文本      → interrupt(event.text) + 文本追加到 _pending_messages
+    ├── /stop         → Hard interrupt: interrupt + force clear _running_agents lock, immediately unlock session
+    ├── /reset /new   → Interrupt + clear pending queue (prevents old text replay #2170) → Execute reset
+    ├── /queue <text> → Queue: No interruption, will be used as next round's input after current round completes
+    ├── /status       → No interruption, directly return current status
+    ├── /model        → Reject: "Agent is running — wait or /stop first"
+    ├── /approve /deny→ Bypass interruption, directly route to approval handler (agent is blocked on approval event)
+    ├── Photo         → Queue without interruption, multiple photos automatically merged into the same pending event
+    └── Normal Text   → interrupt(event.text) + append text to _pending_messages
 ```
 
-### 普通文本打断的完整流程
+### Full Process for Normal Text Interruption
 
 ```python
 # gateway/run.py line 2033-2038
-running_agent.interrupt(event.text)      # 设置中断信号
+running_agent.interrupt(event.text)      # Set interruption signal
 if _quick_key in self._pending_messages:
-    self._pending_messages[_quick_key] += "\n" + event.text  # 追加
+    self._pending_messages[_quick_key] += "\n" + event.text  # Append
 else:
-    self._pending_messages[_quick_key] = event.text          # 新建
+    self._pending_messages[_quick_key] = event.text          # Create new
 ```
 
-agent 在下一个检查点发现中断信号 → 停止当前轮次 → pending 文本作为新一轮输入继续处理。
+The agent detects the interruption signal at the next checkpoint → stops the current round → pending text is processed as input for the new round.
 
-### 跨 Session 完全隔离
+### Complete Isolation Across Sessions
 
-`_running_agents` 的 key 是 `_quick_key`（由 platform + user_id + chat_id 组成），不同 session 有独立的 key：
+The key for `_running_agents` is `_quick_key` (composed of platform + user_id + chat_id), ensuring different sessions have independent keys:
 
-| 场景 | 是否打断 | 原因 |
-|------|:---:|------|
-| 同一聊天窗口发普通文本 | ✅ | interrupt() 打断当前 agent |
-| 同一聊天窗口发 /queue | ❌ | 排队等当前完成 |
-| 同一聊天窗口发照片 | ❌ | 自动排队合并 |
-| 不同聊天窗口 / 不同用户 | ❌ | 不同 _quick_key，独立线程并行 |
+| Scenario | Interrupt? | Reason |
+|---|:---:|---|
+| Send normal text in the same chat window | ✅ | `interrupt()` interrupts current agent |
+| Send `/queue` in the same chat window | ❌ | Queued, waits for current task to complete |
+| Send photo in the same chat window | ❌ | Automatically queued and merged |
+| Different chat window / different user | ❌ | Different `_quick_key`, independent threads run in parallel |
 
-不同 session 的 agent 通过 `run_in_executor` 在线程池中执行，真正并行。
+Agents for different sessions execute in parallel in a thread pool via `run_in_executor`.
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[messaging-gateway-architecture]] — Session 是网关的核心组件
-- [[multi-agent-architecture]] — 中断传播到子 agent（`_active_children`）
-- [[session-search-and-sessiondb]] — SQLite SessionDB 提供 FTS5 搜索
-- [[cron-scheduling]] — 会话 origin 用于 cron 投递路由
-- [[memory-system-architecture]] — 过期会话触发 memory flush
+- [[messaging-gateway-architecture]] — Session is a core gateway component
+- [[multi-agent-architecture]] — Interruptions propagate to child agents (`_active_children`)
+- [[session-search-and-sessiondb]] — SQLite SessionDB provides FTS5 search
+- [[cron-scheduling]] — Session origin used for cron delivery routing
+- [[memory-system-architecture]] — Expired sessions trigger memory flush

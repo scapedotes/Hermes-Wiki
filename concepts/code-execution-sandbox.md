@@ -1,5 +1,6 @@
+```markdown
 ---
-title: 代码执行沙箱（execute_code）
+title: Code Execution Sandbox (execute_code)
 created: 2026-04-10
 updated: 2026-04-10
 type: concept
@@ -7,73 +8,74 @@ tags: [sandbox, code-execution, tools, architecture]
 sources: [tools/code_execution_tool.py]
 ---
 
-# 代码执行沙箱
+# Code Execution Sandbox
 
-## 概述
+## Overview
 
-`execute_code` 工具让 LLM 编写一段 Python 脚本，在隔离子进程中执行。脚本可以通过 RPC 回调有限的 Hermes 工具集，将多步工具链压缩为一次推理，减少 token 消耗和延迟。
+The `execute_code` tool allows LLMs to write a Python script and execute it in an isolated subprocess. The script can call back to a limited set of Hermes tools via RPC, compressing multi-step toolchains into a single inference, thereby reducing token consumption and latency.
 
-## 核心价值
+## Core Value
 
 ```text
-传统方式：10 轮工具调用 = 10 次 LLM 推理 + 10 次 context 膨胀
-execute_code：1 次 LLM 写脚本 + 1 次执行，中间结果不进 context
+Traditional approach: 10 tool calls = 10 LLM inferences + 10 context expansions
+execute_code: 1 LLM writes script + 1 execution, intermediate results don't enter context
 ```
 
-## 沙箱限制
+## Sandbox Restrictions
 
-### 允许的工具（只有 7 个）
+### Allowed Tools (Only 7)
 
 ```python
 SANDBOX_ALLOWED_TOOLS = [
-    "web_search",      # 搜索
-    "web_extract",     # 网页提取
-    "read_file",       # 读文件
-    "write_file",      # 写文件
-    "search_files",    # 搜索文件
-    "patch",           # 修改文件
-    "terminal",        # 终端命令
+    "web_search",      # Web search
+    "web_extract",     # Web page extraction
+    "read_file",       # Read file
+    "write_file",      # Write file
+    "search_files",    # Search files
+    "patch",           # Modify file
+    "terminal",        # Terminal command
 ]
 ```
 
-### 资源限制
+### Resource Limits
 
 ```python
-DEFAULT_TIMEOUT = 300         # 5 分钟超时
-DEFAULT_MAX_TOOL_CALLS = 50   # 最多 50 次工具调用
-MAX_STDOUT_BYTES = 50_000     # 输出上限 50KB
-MAX_STDERR_BYTES = 10_000     # 错误输出上限 10KB
+DEFAULT_TIMEOUT = 300         # 5 minute timeout
+DEFAULT_MAX_TOOL_CALLS = 50   # Max 50 tool calls
+MAX_STDOUT_BYTES = 50_000     # Max stdout 50KB
+MAX_STDERR_BYTES = 10_000     # Max stderr 10KB
 ```
 
-可通过 config.yaml 的 `code_execution.*` 覆盖。
+These can be overridden via `code_execution.*` in config.yaml.
 
-## 两种通信模式
+## Two Communication Modes
 
-| 模式 | 适用后端 | 通信方式 |
-|------|---------|---------|
-| **UDS（Unix Domain Socket）** | local | 父进程开 RPC listener，子进程通过 socket 调用工具 |
-| **File-based RPC** | Docker / SSH / Modal / Daytona | 子进程写请求文件 → 父进程轮询 → 写响应文件 |
+| Mode | Applicable Backend | Communication Method |
+|------|--------------------|----------------------|
+| **UDS (Unix Domain Socket)** | local | Parent process opens RPC listener, child process calls tools via socket |
+| **File-based RPC** | Docker / SSH / Modal / Daytona | Child process writes request file → Parent process polls → Writes response file |
 
-### 流程
+### Process Flow
 
 ```text
-1. 父进程生成 hermes_tools.py stub（包含 RPC 函数）
-2. 父进程开启 RPC 监听（UDS socket 或文件轮询线程）
-3. 子进程执行 LLM 写的脚本
-4. 脚本中调用 hermes_tools.web_search(...) 等
-   → 通过 RPC 发回父进程 → 父进程调真正的工具 → 返回结果
-5. 只有最终 stdout 返回给 LLM，中间结果不进 context
+1. Parent process generates hermes_tools.py stub (containing RPC functions)
+2. Parent process starts RPC listener (UDS socket or file polling thread)
+3. Child process executes script written by LLM
+4. Script calls hermes_tools.web_search(...) etc.
+   → Sent back to parent process via RPC → Parent process calls actual tool → Returns result
+5. Only final stdout is returned to LLM; intermediate results do not enter context
 ```
 
-## 与 Terminal Backend 的关系
+## Relationship with Terminal Backend
 
-execute_code 的脚本**在当前 terminal backend 中执行**。如果 backend 是 Docker，脚本就跑在 Docker 里，通过 file-based RPC 回调本机的工具。
+The `execute_code` script **executes within the current terminal backend**. If the backend is Docker, the script runs inside Docker and calls back to local tools via file-based RPC.
 
-## 相关页面
+## Related Pages
 
-- [[terminal-backends]] — 脚本在哪个后端执行
-- [[large-tool-result-handling]] — 工具结果的溢出防护
+- [[terminal-backends]] — Which backend the script executes in
+- [[large-tool-result-handling]] — Overflow protection for tool results
 
-## 关键源码
+## Key Source Code
 
-- `tools/code_execution_tool.py`（1347 行）— 沙箱完整实现
+- `tools/code_execution_tool.py` (1347 lines) — Complete sandbox implementation
+```

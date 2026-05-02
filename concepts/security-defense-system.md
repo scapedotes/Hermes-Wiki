@@ -1,134 +1,134 @@
 ---
-title: 安全防御体系 — 多层注入检测
+title: Security Defense System — Multi-Layer Injection Detection
 created: 2026-04-07
 updated: 2026-04-11
 type: concept
 tags: [architecture, security, injection-defense, skills-guard]
-sources: [hermes-agent 源码分析 2026-04-07]
+sources: [Hermes Agent Source Code Analysis 2026-04-07]
 ---
 
-# 安全防御体系 — 多层注入检测
+# Security Defense System — Multi-Layer Injection Detection
 
-## 设计原理
+## Design Principles
 
-Hermes Agent 具有执行代码、读写文件、访问网络的能力，因此必须防御：
-1. **提示注入** — 恶意内容试图覆盖 Agent 指令
-2. **数据泄露** — 窃取 API 密钥、凭证
-3. **破坏性操作** — 删除文件、破坏系统
-4. **持久化后门** — 修改启动脚本、cron 任务
-5. **供应链攻击** — 恶意技能、未锁定依赖
+Hermes Agent has the ability to execute code, read/write files, and access networks, therefore it must defend against:
+1.  **Prompt Injection** — Malicious content attempting to override Agent instructions
+2.  **Data Exfiltration** — Stealing API keys, credentials
+3.  **Destructive Operations** — Deleting files, damaging the system
+4.  **Persistence Backdoors** — Modifying startup scripts, cron jobs
+5.  **Supply Chain Attacks** — Malicious skills, unpinned dependencies
 
-Hermes 实现了 **5 层防御体系**，从内容扫描到信任策略。
+Hermes implements a **5-layer defense system**, ranging from content scanning to trust policies.
 
-## 第 1 层：Skills Guard 安全扫描
+## Layer 1: Skills Guard Security Scan
 
-### 威胁模式库（100+ 正则模式）
+### Threat Pattern Library (100+ Regex Patterns)
 
 ```python
 THREAT_PATTERNS = [
-    # ── 数据泄露 ──
+    # ── Data Exfiltration ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD)',
      "env_exfil_curl", "critical", "exfiltration",
-     "curl 命令插值密钥环境变量"),
+     "curl command interpolating secret environment variables"),
     (r'os\.getenv\s*\(\s*[^\)]*(?:KEY|TOKEN|SECRET|PASSWORD)',
      "python_getenv_secret", "critical", "exfiltration",
-     "通过 os.getenv() 读取密钥"),
+     "Reading secrets via os.getenv()"),
     (r'\$HOME/\.ssh|\~/\.ssh',
      "ssh_dir_access", "high", "exfiltration",
-     "引用用户 SSH 目录"),
+     "Referencing user SSH directory"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
      "hermes_env_access", "critical", "exfiltration",
-     "直接引用 Hermes 密钥文件"),
+     "Directly referencing Hermes secret file"),
     
-    # ── 提示注入 ──
+    # ── Prompt Injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
-     "提示注入：忽略之前指令"),
+     "Prompt Injection: Ignore previous instructions"),
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
      "deception_hide", "critical", "injection",
-     "指示 Agent 向用户隐藏信息"),
+     "Instructing Agent to hide info from user"),
     (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)',
      "bypass_restrictions", "critical", "injection",
-     "指示 Agent 无限制地行动"),
+     "Instructing Agent to act without restrictions"),
     
-    # ── 破坏性操作 ──
+    # ── Destructive Operations ──
     (r'rm\s+-rf\s+/',
      "destructive_root_rm", "critical", "destructive",
-     "从根目录递归删除"),
+     "Recursive deletion from root"),
     (r'shutil\.rmtree\s*\(\s*[\"\']/',
      "python_rmtree", "high", "destructive",
-     "Python rmtree 绝对路径"),
+     "Python rmtree absolute path"),
     (r'>\s*/etc/',
      "system_overwrite", "critical", "destructive",
-     "覆盖系统配置文件"),
+     "Overwriting system configuration files"),
     
-    # ── 持久化后门 ──
+    # ── Persistence Backdoors ──
     (r'\bcrontab\b',
      "persistence_cron", "medium", "persistence",
-     "修改 cron 任务"),
+     "Modifying cron jobs"),
     (r'authorized_keys',
      "ssh_backdoor", "critical", "persistence",
-     "修改 SSH 授权密钥"),
+     "Modifying SSH authorized keys"),
     (r'systemd.*\.service|systemctl\s+(enable|start)',
      "systemd_service", "medium", "persistence",
-     "引用或启用 systemd 服务"),
+     "Referencing or enabling systemd service"),
     (r'\.(bashrc|zshrc|profile)',
      "shell_rc_mod", "medium", "persistence",
-     "引用 shell 启动文件"),
+     "Referencing shell startup files"),
     
-    # ── 网络后门 ──
+    # ── Network Backdoors ──
     (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b',
      "reverse_shell", "critical", "network",
-     "潜在反向 shell 监听器"),
+     "Potential reverse shell listener"),
     (r'\bngrok\b|\blocaltunnel\b|\bserveo\b',
      "tunnel_service", "high", "network",
-     "使用隧道服务获取外部访问"),
+     "Using tunneling service for external access"),
     
-    # ── 混淆执行 ──
+    # ── Obfuscated Execution ──
     (r'base64\s+(-d|--decode)\s*\|',
      "base64_decode_pipe", "high", "obfuscation",
-     "base64 解码并管道执行"),
+     "base64 decode and pipe execution"),
     (r'\beval\s*\(\s*[\"\']',
      "eval_string", "high", "obfuscation",
-     "eval() 字符串参数"),
+     "eval() string argument"),
     (r'echo\s+[^\n]*\|\s*(bash|sh|python)',
      "echo_pipe_exec", "critical", "obfuscation",
-     "echo 管道解释器执行"),
+     "echo pipe to interpreter execution"),
     
-    # ── 供应链攻击 ──
+    # ── Supply Chain Attacks ──
     (r'curl\s+[^\n]*\|\s*(ba)?sh',
      "curl_pipe_shell", "critical", "supply_chain",
-     "curl 管道到 shell（下载执行）"),
+     "curl pipe to shell (download and execute)"),
     (r'pip\s+install\s+(?!-r\s)(?!.*==)',
      "unpinned_pip_install", "medium", "supply_chain",
-     "pip install 无版本锁定"),
+     "pip install without version pinning"),
     
-    # ── 硬编码密钥 ──
+    # ── Hardcoded Secrets ──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*[\"\'][A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure",
-     "可能的硬编码 API 密钥"),
+     "Potential hardcoded API key"),
     (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
      "embedded_private_key", "critical", "credential_exposure",
-     "嵌入的私钥"),
+     "Embedded private key"),
 ]
 ```
 
-### 不可见 Unicode 检测
+### Invisible Unicode Detection
 
 ```python
 INVISIBLE_CHARS = {
-    '\u200b',  # 零宽空格
-    '\u200c',  # 零宽非连接符
-    '\u200d',  # 零宽连接符
-    '\u2060',  # 词连接符
-    '\ufeff',  # 零宽不换行空格 (BOM)
-    '\u202a',  # 从左到右嵌入
-    '\u202b',  # 从右到左嵌入
-    '\u202e',  # 从右到左覆盖
-    # ... 共 17 个字符
+    '\u200b',  # Zero Width Space
+    '\u200c',  # Zero Width Non-Joiner
+    '\u200d',  # Zero Width Joiner
+    '\u2060',  # Word Joiner
+    '\ufeff',  # Zero Width No-Break Space (BOM)
+    '\u202a',  # Left-to-Right Embedding
+    '\u202b',  # Right-to-Left Embedding
+    '\u202e',  # Right-to-Left Override
+    # ... 17 characters in total
 }
 
-# 检测技能文件中的不可见字符
+# Detect invisible characters in skill files
 for i, line in enumerate(lines, start=1):
     for char in INVISIBLE_CHARS:
         if char in line:
@@ -137,16 +137,16 @@ for i, line in enumerate(lines, start=1):
                 severity="high",
                 category="injection",
                 match=f"U+{ord(char):04X}",
-                description="不可见 Unicode 字符（可能文本隐藏/注入）",
+                description="Invisible Unicode character (potential text hiding/injection)",
             ))
 ```
 
-### 结构检查
+### Structure Checks
 
 ```python
-MAX_FILE_COUNT = 50       # 技能不应有 50+ 文件
-MAX_TOTAL_SIZE_KB = 1024  # 总大小 1MB 可疑
-MAX_SINGLE_FILE_KB = 256  # 单文件 > 256KB 可疑
+MAX_FILE_COUNT = 50       # Skill should not have 50+ files
+MAX_TOTAL_SIZE_KB = 1024  # Total size > 1MB suspicious
+MAX_SINGLE_FILE_KB = 256  # Single file > 256KB suspicious
 
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin',
@@ -155,7 +155,7 @@ SUSPICIOUS_BINARY_EXTENSIONS = {
 }
 ```
 
-## 第 2 层：信任级别策略
+## Layer 2: Trust Level Policies
 
 ```python
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
@@ -171,7 +171,7 @@ INSTALL_POLICY = {
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 ```
 
-### 裁决逻辑
+### Verdict Logic
 
 ```python
 def _determine_verdict(findings):
@@ -185,33 +185,33 @@ def _determine_verdict(findings):
         return "dangerous"
     if has_high:
         return "caution"
-    return "safe"  # 仅 medium/low
+    return "safe"  # only medium/low
 ```
 
-### 安装决策
+### Installation Decision
 
-| 来源 | safe | caution | dangerous |
-|------|------|---------|-----------|
-| builtin（内置） | allow | allow | allow |
-| trusted（OpenAI/Anthropic） | allow | allow | block |
-| community（社区） | allow | **block** | block |
-| agent-created（Agent 创建） | allow | allow | **ask** |
+| Source | safe | caution | dangerous |
+|---|---|---|---|
+| builtin | allow | allow | allow |
+| trusted (OpenAI/Anthropic) | allow | allow | block |
+| community | allow | **block** | block |
+| agent-created | allow | allow | **ask** |
 
-## 第 3 层：Memory 内容扫描
+## Layer 3: Memory Content Scanning
 
 ```python
 _MEMORY_THREAT_PATTERNS = [
-    # 提示注入
+    # Prompt Injection
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'you\s+are\s+now\s+', "role_hijack"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'act\s+as\s+(if|though)\s+.*no\s+(restrictions|limits)', "bypass_restrictions"),
-    # 密钥泄露
+    # Secret Exfiltration
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc)', "read_secrets"),
     (r'base64\s+(-d|--decode)\s*\|', "base64_decode_pipe"),
-    # 持久化后门
+    # Persistence Backdoors
     (r'authorized_keys', "ssh_backdoor"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
     (r'crontab', "persistence_cron"),
@@ -219,21 +219,21 @@ _MEMORY_THREAT_PATTERNS = [
 ]
 
 def _scan_memory_content(content: str) -> Optional[str]:
-    """扫描记忆内容，发现威胁返回错误字符串"""
-    # 检测不可见 Unicode
+    """Scans memory content, returns error string if threat found"""
+    # Detect invisible Unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
-            return f"Blocked: 不可见 Unicode 字符 U+{ord(char):04X}"
+            return f"Blocked: Invisible Unicode character U+{ord(char):04X}"
     
-    # 检测威胁模式
+    # Detect threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: 匹配威胁模式 '{pid}'"
+            return f"Blocked: Matches threat pattern '{pid}'"
     
-    return None  # 安全
+    return None  # Safe
 ```
 
-## 第 4 层：上下文文件注入扫描
+## Layer 4: Context File Injection Scanning
 
 ```python
 _CONTEXT_THREAT_PATTERNS = [
@@ -250,15 +250,15 @@ _CONTEXT_THREAT_PATTERNS = [
 ]
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """扫描上下文文件（SOUL.md, AGENTS.md 等）"""
+    """Scans context files (SOUL.md, AGENTS.md, etc.)"""
     findings = []
     
-    # 检测不可见 Unicode
+    # Detect invisible Unicode
     for char in _CONTEXT_INVISIBLE_CHARS:
         if char in content:
             findings.append(f"invisible unicode U+{ord(char):04X}")
     
-    # 检测威胁模式
+    # Detect threat patterns
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             findings.append(pid)
@@ -267,10 +267,10 @@ def _scan_context_content(content: str, filename: str) -> str:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
     
-    return content  # 安全，返回原始内容
+    return content  # Safe, return original content
 ```
 
-## 第 5 层：终端命令启发式检测
+## Layer 5: Terminal Command Heuristic Detection
 
 ```python
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -289,7 +289,7 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
 def _is_destructive_command(cmd: str) -> bool:
-    """启发式：此终端命令是否像修改/删除文件？"""
+    """Heuristic: Does this terminal command look like it modifies/deletes files?"""
     if not cmd:
         return False
     if _DESTRUCTIVE_PATTERNS.search(cmd):
@@ -299,44 +299,44 @@ def _is_destructive_command(cmd: str) -> bool:
     return False
 ```
 
-## 安全扫描执行时机
+## Security Scan Execution Timing
 
-| 时机 | 扫描内容 | 扫描器 |
-|------|----------|--------|
-| 技能创建 | 整个技能目录 | Skills Guard |
-| 技能编辑/补丁 | 整个技能目录 | Skills Guard |
-| 记忆写入 | 条目内容 | Memory Scanner |
-| 上下文文件加载 | SOUL.md, AGENTS.md 等 | Context Scanner |
-| 技能安装（Hub） | 整个技能目录 | Skills Guard |
+| Timing | Scanned Content | Scanner |
+|---|---|---|
+| Skill Creation | Entire skill directory | Skills Guard |
+| Skill Editing/Patching | Entire skill directory | Skills Guard |
+| Memory Write | Entry content | Memory Scanner |
+| Context File Loading | SOUL.md, AGENTS.md, etc. | Context Scanner |
+| Skill Installation (Hub) | Entire skill directory | Skills Guard |
 
-## 回滚机制
+## Rollback Mechanism
 
 ```python
-# 技能创建/编辑后扫描
+# Scan after skill creation/editing
 scan_error = _security_scan_skill(skill_dir)
 if scan_error:
-    # 自动回滚到修改前的状态
+    # Automatically roll back to pre-modification state
     _atomic_write_text(target, original_content)
     return {"success": False, "error": scan_error}
 ```
 
-## 与其他 Agent 框架对比
+## Comparison with Other Agent Frameworks
 
-| 特性 | Hermes | Cursor | Claude Desktop |
-|------|--------|--------|----------------|
-| 技能安全扫描 | ✅ 100+ 模式 | N/A | N/A |
-| 信任级别策略 | ✅ 4 级 | N/A | N/A |
-| 记忆内容扫描 | ✅ | N/A | N/A |
-| 上下文文件扫描 | ✅ | N/A | N/A |
-| Unicode 注入检测 | ✅ 17 字符 | ❌ | ❌ |
-| 自动回滚 | ✅ | N/A | N/A |
-| 破坏性命令检测 | ✅ 启发式 | ❌ | ❌ |
+| Feature | Hermes | Cursor | Claude Desktop |
+|---|---|---|---|
+| Skill Security Scan | ✅ 100+ patterns | N/A | N/A |
+| Trust Level Policy | ✅ 4 levels | N/A | N/A |
+| Memory Content Scan | ✅ | N/A | N/A |
+| Context File Scan | ✅ | N/A | N/A |
+| Unicode Injection Detection | ✅ 17 characters | ❌ | ❌ |
+| Automatic Rollback | ✅ | N/A | N/A |
+| Destructive Command Detection | ✅ Heuristic | ❌ | ❌ |
 
-## 危险命令审批系统（tools/approval.py — 877 行）
+## Dangerous Command Approval System (tools/approval.py — 877 lines)
 
-当 agent 执行的终端命令匹配危险模式时，系统拦截并要求用户确认。
+When a terminal command executed by the agent matches a dangerous pattern, the system intercepts it and requires user confirmation.
 
-### 三种审批模式
+### Three Approval Modes
 
 ```yaml
 # config.yaml
@@ -344,54 +344,54 @@ approvals:
   mode: smart   # manual | smart | off
 ```
 
-| 模式 | 行为 |
-|------|------|
-| `manual` | 所有匹配危险模式的命令都要人工确认 |
-| `smart` | 先用 auxiliary LLM 评估风险，低风险自动放行，高风险才问用户 |
-| `off`（yolo） | 跳过所有审批（危险，仅限可信环境） |
+| Mode | Behavior |
+|---|---|
+| `manual` | All commands matching dangerous patterns require manual confirmation |
+| `smart` | First, use an auxiliary LLM to assess risk. Low-risk commands are auto-approved, high-risk ones prompt the user. |
+| `off` (yolo) | Skip all approvals (dangerous, only for trusted environments) |
 
-### 审批选项（CLI 交互）
+### Approval Options (CLI Interaction)
 
-用户看到危险命令后可选择：
-- **once** — 本次允许
-- **session** — 本次会话内同类命令都允许
-- **always** — 永久允许（写入 config.yaml）
-- **deny** — 拒绝执行
+After seeing a dangerous command, the user can choose:
+-   **once** — Allow this time
+-   **session** — Allow similar commands for this session
+-   **always** — Allow permanently (writes to config.yaml)
+-   **deny** — Deny execution
 
-超时未响应（45 秒）→ 默认拒绝（fail-closed）。
+Timeout (45 seconds) → default to deny (fail-closed).
 
-### 危险模式检测
+### Dangerous Pattern Detection
 
-匹配规则涵盖：
-- 破坏性操作：`rm -rf`、`mkfs`、`dd`、`truncate` 等
-- 权限提升：`sudo`、`su`、`chmod 777`
-- 敏感文件写入：`/etc/`、`~/.ssh/`、`~/.hermes/.env`
-- 网络操作：`curl | bash`、端口监听
-- 环境变量操控：覆盖 `PATH`、`LD_PRELOAD`
+Matching rules cover:
+-   Destructive operations: `rm -rf`, `mkfs`, `dd`, `truncate`, etc.
+-   Privilege escalation: `sudo`, `su`, `chmod 777`
+-   Sensitive file writes: `/etc/`, `~/.ssh/`, `~/.hermes/.env`
+-   Network operations: `curl | bash`, port listening
+-   Environment variable manipulation: Overriding `PATH`, `LD_PRELOAD`
 
-### Per-session 状态
+### Per-session State
 
-审批状态按 session 隔离（`contextvars.ContextVar`），gateway 多用户并发时互不影响。"session" 级别的允许只在当前会话有效，不跨 session。
+Approval status is isolated by session (`contextvars.ContextVar`), ensuring no interference during multi-user concurrency in the gateway. "Session"-level permissions are only valid for the current session and do not persist across sessions.
 
-## 额外安全层
+## Additional Security Layers
 
-- `tools/tirith_security.py` — Tirith 安全策略引擎（homograph URL、pipe-to-shell、terminal 注入）
-- `tools/url_safety.py` — URL 安全检查（SSRF 防护：拦截私有网络、云元数据地址、验证重定向）
-- `tools/osv_check.py` — 依赖恶意软件扫描（OSV 数据库）
+-   `tools/tirith_security.py` — Tirith Security Policy Engine (homograph URL, pipe-to-shell, terminal injection)
+-   `tools/url_safety.py` — URL Safety Check (SSRF protection: blocks private networks, cloud metadata addresses, validates redirects)
+-   `tools/osv_check.py` — Dependency Malware Scan (OSV database)
 
-## 相关页面
+## Related Pages
 
-- [[memory-system-architecture]] — 记忆内容安全扫描机制
-- [[skills-system-architecture]] — 技能安装时的安全扫描与信任策略
-- [[prompt-builder-architecture]] — 上下文文件注入扫描防护
+-   [[memory-system-architecture]] — Memory Content Security Scanning Mechanism
+-   [[skills-system-architecture]] — Security Scanning and Trust Policies during Skill Installation
+-   [[prompt-builder-architecture]] — Context File Injection Scanning Protection
 
-## 相关文件
+## Related Files
 
-- `tools/skills_guard.py` — Skills Guard 安全扫描
-- `tools/memory_tool.py` — Memory 内容扫描
-- `agent/prompt_builder.py` — 上下文文件扫描
-- `run_agent.py` — 终端命令启发式检测
-- `tools/approval.py` — 命令审批（31 模式）
-- `tools/tirith_security.py` — Tirith 安全策略
-- `tools/url_safety.py` — SSRF 防护
-- `tools/osv_check.py` — 恶意软件扫描
+-   `tools/skills_guard.py` — Skills Guard Security Scan
+-   `tools/memory_tool.py` — Memory Content Scan
+-   `agent/prompt_builder.py` — Context File Scan
+-   `run_agent.py` — Terminal Command Heuristic Detection
+-   `tools/approval.py` — Command Approval (31 patterns)
+-   `tools/tirith_security.py` — Tirith Security Policy
+-   `tools/url_safety.py` — SSRF Protection
+-   `tools/osv_check.py` — Malware Scan

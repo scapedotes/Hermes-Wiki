@@ -1,5 +1,5 @@
 ---
-title: Hermes 多 Agent 架构
+title: Hermes Multi-Agent Architecture
 created: 2026-04-08
 updated: 2026-04-18
 type: concept
@@ -7,228 +7,228 @@ tags: [architecture, module, agent, delegation, concurrency]
 sources: [tools/delegate_tool.py, tools/mixture_of_agents_tool.py, run_agent.py]
 ---
 
-# Hermes 多 Agent 架构
+# Hermes Multi-Agent Architecture
 
-## 概述
+## Overview
 
-Hermes 的多 Agent 能力分为**三种运行时机制**，全部在 Agent 对话过程中触发，不涉及外部脚本或离线工具：
+Hermes' multi-agent capabilities are categorized into **three runtime mechanisms**, all triggered during the agent's conversation process, without involving external scripts or offline tools:
 
-| 机制                    | 触发方式                  | 用途                   |
-| --------------------- | --------------------- | -------------------- |
-| **Delegate Task**     | LLM tool call（模型自主决定） | 并行子任务，最多 3 路         |
-| **Mixture of Agents** | LLM tool call（模型自主决定） | 多模型协同推理              |
-| **Background Review** | 系统计数器自动触发             | 后台提炼经验 → 创建/改进 skill |
+| Mechanism             | Trigger Method                          | Purpose                                   |
+| --------------------- | --------------------------------------- | ----------------------------------------- |
+| **Delegate Task**     | LLM tool call (model's autonomous decision) | Parallel subtasks, up to 3 paths          |
+| **Mixture of Agents** | LLM tool call (model's autonomous decision) | Collaborative multi-model reasoning       |
+| **Background Review** | System counter automatic trigger        | Background experience refinement → Create/Improve skill |
 
-## 触发机制
+## Trigger Mechanisms
 
-四种机制分为两类触发方式：
+The mechanisms are divided into two categories of trigger methods:
 
-### LLM 自主调用（Delegate Task / MoA）
+### LLM Autonomous Invocation (Delegate Task / MoA)
 
-和 `web_search`、`read_file` 完全一样 — 模型在系统 prompt 中看到工具描述，根据用户问题**自己判断**是否调用，没有任何代码逻辑强制触发。
+Exactly like `web_search` and `read_file` — the model sees the tool description in the system prompt and **autonomously decides** whether to invoke it based on the user's question, without any code logic forcing the trigger.
 
 ```text
-用户提问 → LLM 推理 → 决定调用 delegate_task / mixture_of_agents
-                              │
-                              ▼
-                  run_agent._invoke_tool()
-                              │
-            ┌─────────────────┼──────────────────┐
-            ▼                                    ▼
-    delegate_task                          registry.dispatch()
-    (特殊分支，需注入                        → mixture_of_agents
-     parent_agent 引用)
+User Question → LLM Reasoning → Decides to invoke delegate_task / mixture_of_agents
+                                      │
+                                      ▼
+                          run_agent._invoke_tool()
+                                      │
+                ┌─────────────────────┼──────────────────┐
+                ▼                                        ▼
+        delegate_task                              registry.dispatch()
+        (Special branch, requires                  → mixture_of_agents
+         injecting parent_agent reference)
 ```
 
-LLM 看到的工具描述：
+LLM's description of the tools (decision basis):
 
-| 工具                  | LLM 看到的描述（决策依据）                                                                                             |
-| ------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `delegate_task`     | *"Spawn subagents to work on tasks in isolated contexts. Only the final summary is returned."*              |
-| `mixture_of_agents` | *"Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls — use sparingly."* |
+| Tool                  | LLM's Description (Decision Basis)                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `delegate_task`     | *"Spawn subagents to work on tasks in isolated contexts. Only the final summary is returned."*                            |
+| `mixture_of_agents` | *"Route a hard problem through multiple frontier LLMs collaboratively. Makes 5 API calls — use sparingly."*               |
 
-`delegate_task` 在 `_invoke_tool()` 中有显式分支（line 6108），因为需要注入 `parent_agent`。`mixture_of_agents` 走通用 registry dispatch。
+`delegate_task` has an explicit branch in `_invoke_tool()` (line 6108) because it requires injecting `parent_agent`. `mixture_of_agents` goes through the general registry dispatch.
 
-### 系统自动触发（Background Review）
+### System Automatic Trigger (Background Review)
 
-**LLM 不参与决定**。两个独立计数器在主循环中静默递增，阈值到达后在**用户拿到回复之后**自动触发：
+**The LLM does not participate in the decision**. Two independent counters silently increment in the main loop, automatically triggering **after the user receives the response** when the threshold is reached:
 
 ```python
-# run_agent.py — 两个独立计数器
+# run_agent.py — Two independent counters
 
-# 记忆 review：每个 LLM turn +1（line 7008）
+# Memory review: +1 for each LLM turn (line 7008)
 self._turns_since_memory += 1
-if self._turns_since_memory >= self._memory_nudge_interval:  # 默认 10
+if self._turns_since_memory >= self._memory_nudge_interval:  # Default 10
     _should_review_memory = True
     self._turns_since_memory = 0
 
-# 技能 review：每次 tool call +1（line 7242）
+# Skill review: +1 for each tool call (line 7242)
 self._iters_since_skill += 1
-if self._iters_since_skill >= self._skill_nudge_interval:    # 默认 10
+if self._iters_since_skill >= self._skill_nudge_interval:    # Default 10
     _should_review_skills = True
     self._iters_since_skill = 0
 ```
 
 ```text
-用户提问 → Agent 推理 + 工具调用 → 回复交付给用户
-                                        │
-                                  检查计数器（line 9158）
-                                        │
-                                   超阈值？──否──→ 什么都不做
-                                        │
-                                       是
-                                        │
-                                        ▼
-                              _spawn_background_review()
-                              （守护线程，非阻塞）
-                                        │
-                                        ▼
-                                  静默 AIAgent fork
-                                  max_iterations=8
-                                  stdout → /dev/null
-                                        │
-                                  审视对话历史
-                                  "有没有试错、改变策略的经验？"
-                                        │
-                              ┌─────────┴─────────┐
-                              ▼                   ▼
-                      skill_manage()         memory.add()
-                      创建/改进 skill         提取持久事实
-                              │                   │
-                              └─────────┬─────────┘
-                                        ▼
-                              callback: "💾 Skill updated"
+User Question → Agent Reasoning + Tool Call → Response delivered to user
+                                                    │
+                                              Check counters (line 9158)
+                                                    │
+                                              Exceeds threshold? ──No──→ Do nothing
+                                                    │
+                                                   Yes
+                                                    │
+                                                    ▼
+                                          _spawn_background_review()
+                                          (Daemon thread, non-blocking)
+                                                    │
+                                                    ▼
+                                              Silent AIAgent fork
+                                              max_iterations=8
+                                              stdout → /dev/null
+                                                    │
+                                              Review conversation history
+                                              "Are there any trial-and-error experiences or strategy changes?"
+                                                    │
+                                        ┌─────────┴─────────┐
+                                        ▼                   ▼
+                                skill_manage()         memory.add()
+                                Create/Improve skill   Extract persistent facts
+                                        │                   │
+                                        └─────────┬─────────┘
+                                                  ▼
+                                        callback: "💾 Skill updated"
 ```
 
-**关键区别**：用户已经拿到回复了，review 是后台静默行为。类似 GC（垃圾回收）— 定期自动跑，用户无感知。
+**Key distinction**: The user has already received the response; the review is a silent background operation. Similar to Garbage Collection (GC) — it runs periodically and automatically, unnoticed by the user.
 
-## 一、Delegate Task — 子代理委派
+## I. Delegate Task — Sub-Agent Delegation
 
-Agent 运行时的核心多 Agent 能力。父 Agent 生成隔离的子 Agent 执行独立任务。
+A core multi-agent capability during agent runtime. The parent agent spawns isolated child agents to execute independent tasks.
 
-### 核心常量
+### Core Constants
 
 ```python
 # tools/delegate_tool.py
 DELEGATE_BLOCKED_TOOLS = frozenset([
-    "delegate_task",   # 禁止递归委派
-    "clarify",         # 子代理不能向用户提问
-    "memory",          # 不能写入共享 MEMORY.md
-    "send_message",    # 不能产生跨平台副作用（send_message 是消息投递工具，不属于多 Agent 机制）
-    "execute_code",    # 子代理应逐步推理
+    "delegate_task",   # Prohibit recursive delegation
+    "clarify",         # Child agents cannot ask users questions
+    "memory",          # Cannot write to shared MEMORY.md
+    "send_message",    # Cannot produce cross-platform side effects (send_message is a message delivery tool, not part of multi-agent mechanisms)
+    "execute_code",    # Child agents should reason step by step
 ])
 
-MAX_DEPTH = 2                # 父(0) → 子(1) → 孙子被拒绝(2)
-MAX_CONCURRENT_CHILDREN = 3  # 最多 3 个并行子代理
-DEFAULT_MAX_ITERATIONS = 50  # 每个子代理默认迭代上限
+MAX_DEPTH = 2                # Parent(0) → Child(1) → Grandchild rejected(2)
+MAX_CONCURRENT_CHILDREN = 3  # Maximum 3 concurrent child agents
+DEFAULT_MAX_ITERATIONS = 50  # Default iteration limit for each child agent
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 ```
 
-### Orchestrator 角色 + 可配置深度（v2026.4.18+）
+### Orchestrator Role + Configurable Depth (v2026.4.18+)
 
-`delegate_task` 新增 `role` 参数，支持 `leaf`（默认）和 `orchestrator`：
+`delegate_task` now includes a `role` parameter, supporting `leaf` (default) and `orchestrator`:
 
 ```yaml
 # config.yaml
 delegation:
-  max_concurrent_children: 3   # 并发数下限，无上限
-  max_spawn_depth: 1           # 1=扁平（默认），2-3 解锁嵌套委派
-  orchestrator_enabled: true   # 全局开关
+  max_concurrent_children: 3   # Max concurrent children (default), can be configured
+  max_spawn_depth: 1           # 1=Flat (default), 2-3 unlocks nested delegation
+  orchestrator_enabled: true   # Global switch
 ```
 
-- **leaf**：和之前一样，子 agent 不能再 delegate
-- **orchestrator**：子 agent 保留 `delegation` toolset，可以继续派生自己的 worker
+- **leaf**: As before, child agents cannot delegate further.
+- **orchestrator**: Child agents retain the `delegation` toolset and can continue to spawn their own workers.
 
-**默认扁平姿态**：`max_spawn_depth=1` 时，orchestrator 角色静默降级为 leaf。用户主动把 `max_spawn_depth` 调到 2 或 3 才解锁嵌套委派。
+**Default flat posture**: When `max_spawn_depth=1`, the orchestrator role silently downgrades to leaf. Nested delegation is only unlocked when the user explicitly sets `max_spawn_depth` to 2 or 3.
 
-新增 `DelegateEvent` enum（带 legacy 字符串向后兼容），供 gateway/ACP/CLI 进度消费者使用。
+A new `DelegateEvent` enum (with legacy string for backward compatibility) is added for gateway/ACP/CLI progress consumers.
 
-### 跨 Agent 文件状态协调（v2026.4.18+）
+### Cross-Agent File State Coordination (v2026.4.18+)
 
-多个并发子 agent 同时修改文件时，父 agent 现在能看到一致的文件状态：
-- 子 agent 写入的文件对其他子 agent 可见
-- 父 agent 收到汇总时能看到所有子 agent 的文件操作
-- 防止并发 patch 丢失
+When multiple concurrent child agents modify files simultaneously, the parent agent can now see a consistent file state:
+- Files written by a child agent are visible to other child agents.
+- The parent agent can see all file operations of all child agents when receiving the summary.
+- Prevents lost concurrent patches.
 
-### 函数签名
+### Function Signature
 
 ```python
 def delegate_task(
-    goal: Optional[str] = None,          # 单任务模式
-    context: Optional[str] = None,       # 背景信息
-    toolsets: Optional[List[str]] = None,# 可用工具集
-    tasks: Optional[List[Dict]] = None,  # 批量模式（最多 3 个）
+    goal: Optional[str] = None,          # Single-task mode
+    context: Optional[str] = None,       # Background information
+    toolsets: Optional[List[str]] = None,# Available toolsets
+    tasks: Optional[List[Dict]] = None,  # Batch mode (up to 3 tasks)
     max_iterations: Optional[int] = None,
-    acp_command: Optional[str] = None,   # ACP 子进程命令
+    acp_command: Optional[str] = None,   # ACP subprocess command
     acp_args: Optional[List[str]] = None,
-    parent_agent=None,                   # 由框架自动注入
-) -> str:  # 返回 JSON
+    parent_agent=None,                   # Automatically injected by the framework
+) -> str:  # Returns JSON
 ```
 
-两种模式：
-- **单任务**：传 `goal`，直接执行（无线程池开销）
-- **批量**：传 `tasks` 数组，`ThreadPoolExecutor(max_workers=3)` 并行
+Two modes:
+- **Single-task**: Pass `goal`, execute directly (no thread pool overhead).
+- **Batch**: Pass `tasks` array, `ThreadPoolExecutor(max_workers=3)` in parallel.
 
-### 隔离模型
+### Isolation Model
 
 ```text
-从父 Agent 继承                    子代理独有（完全隔离）
-─────────────────                 ─────────────────────
-✓ Model / Provider / API Key      ✗ 对话历史（空白开始）
-✓ 工作目录 (cwd)                   ✗ 终端 session（独立）
-✓ Credential Pool（同 provider）   ✗ 中间工具调用（父不可见）
-✓ 平台 / session_db 引用           ✗ 推理过程（父不可见）
-✓ Max tokens / reasoning config   ✗ 上下文文件（skip_context_files=True）
-                                   ✗ 记忆（skip_memory=True）
+Inherited from Parent Agent           Child Agent Exclusive (Fully Isolated)
+─────────────────────────             ─────────────────────────────────────
+✓ Model / Provider / API Key          ✗ Conversation history (starts blank)
+✓ Working directory (cwd)             ✗ Terminal session (independent)
+✓ Credential Pool (same provider)     ✗ Intermediate tool calls (invisible to parent)
+✓ Platform / session_db reference     ✗ Reasoning process (invisible to parent)
+✓ Max tokens / reasoning config       ✗ Context files (skip_context_files=True)
+                                      ✗ Memory (skip_memory=True)
 ```
 
-### 子代理构建流程（`_build_child_agent`）
+### Child Agent Building Process (`_build_child_agent`)
 
 ```python
 def _build_child_agent(
-    task_index: int,              # 在批量中的索引
-    goal: str,                    # 委派目标
-    context: Optional[str],       # 背景
-    toolsets: Optional[List[str]],# 工具集（与父取交集，减去黑名单）
-    model: Optional[str],         # 可覆盖父模型
-    max_iterations: int,          # 独立迭代上限
-    parent_agent,                 # 父 Agent 引用
+    task_index: int,              # Index in batch
+    goal: str,                    # Delegation goal
+    context: Optional[str],       # Context
+    toolsets: Optional[List[str]],# Toolsets (intersection with parent's, minus blacklist)
+    model: Optional[str],         # Can override parent model
+    max_iterations: int,          # Independent iteration limit
+    parent_agent,                 # Parent Agent reference
     override_provider=None, override_base_url=None,
     override_api_key=None, override_api_mode=None,
     override_acp_command=None, override_acp_args=None,
 ):
 ```
 
-**工具集计算规则**：子代理永远不能获得比父级更多的工具。
+**Toolset calculation rule**: A child agent can never obtain more tools than its parent.
 
 ```text
-子代理工具 = (用户指定 ∩ 父级可用) - DELEGATE_BLOCKED_TOOLS
+Child Agent Tools = (User Specified ∩ Parent Available) - DELEGATE_BLOCKED_TOOLS
 ```
 
-### 凭证池共享
+### Credential Pool Sharing
 
 ```python
 def _resolve_child_credential_pool(effective_provider, parent_agent):
-    # 同 provider → 共享父级 pool（轮换同步）
-    # 不同 provider → 加载该 provider 自己的 pool
-    # 无 pool → 继承父级固定凭证
+    # Same provider → Share parent pool (rotational sync)
+    # Different provider → Load that provider's own pool
+    # No pool → Inherit parent's fixed credentials
 ```
 
-### 中断传播
+### Interruption Propagation
 
 ```python
-# run_agent.py — 父 Agent 的 interrupt() 方法
+# run_agent.py — Parent Agent's interrupt() method
 with self._active_children_lock:
     children_copy = list(self._active_children)
 for child in children_copy:
-    child.interrupt(message)  # 线程安全传播
+    child.interrupt(message)  # Thread-safe propagation
 ```
 
-子代理在 `_build_child_agent` 时注册到 `_active_children`，执行完成后在 `finally` 中注销。
+Child agents are registered to `_active_children` during `_build_child_agent` and unregistered in the `finally` block upon completion of execution.
 
-### 结果结构
+### Result Structure
 
-父 Agent 只看到这个结构化摘要，**不看到子代理的中间工具调用和推理**：
+The parent agent only sees this structured summary, **not the child agent's intermediate tool calls and reasoning**:
 
 ```json
 {
@@ -252,9 +252,9 @@ for child in children_copy:
 }
 ```
 
-### ACP 异构编排
+### ACP Heterogeneous Orchestration
 
-通过 ACP 协议委派给外部 Agent（如 Claude Code）：
+Delegating to external agents (e.g., Claude Code) via the ACP protocol:
 
 ```python
 delegate_task(
@@ -264,18 +264,18 @@ delegate_task(
 )
 ```
 
-Hermes 作为编排器，外部 Agent 作为执行者。
+Hermes acts as the orchestrator, and external agents act as executors.
 
 ---
 
-## 二、Mixture of Agents — 多模型协同推理
+## II. Mixture of Agents — Collaborative Multi-Model Reasoning
 
-不是子代理，而是**多个外部 LLM 协作回答同一个问题**。
+Not sub-agents, but **multiple external LLMs collaborating to answer the same question**.
 
-### 架构
+### Architecture
 
 ```text
-                    用户问题
+                    User Question
                        │
           ┌────────────┼────────────┐
           ▼            ▼            ▼            ▼
@@ -284,13 +284,13 @@ Hermes 作为编排器，外部 Agent 作为执行者。
           │            │            │            │
           └────────────┼────────────┘
                        ▼
-                Claude Opus 聚合器
+                Claude Opus Aggregator
                   (temp=0.4)
                        │
-                  综合最佳答案
+                  Synthesized Best Answer
 ```
 
-### 常量
+### Constants
 
 ```python
 # tools/mixture_of_agents_tool.py
@@ -302,181 +302,181 @@ REFERENCE_MODELS = [
 ]
 AGGREGATOR_MODEL = "anthropic/claude-opus-4.6"
 
-REFERENCE_TEMPERATURE = 0.6     # 多样性
-AGGREGATOR_TEMPERATURE = 0.4    # 一致性
-MIN_SUCCESSFUL_REFERENCES = 1   # 最少 1 个成功即可聚合
+REFERENCE_TEMPERATURE = 0.6     # Diversity
+AGGREGATOR_TEMPERATURE = 0.4    # Consistency
+MIN_SUCCESSFUL_REFERENCES = 1   # At least 1 successful reference is sufficient for aggregation
 ```
 
-### 与 Delegate Task 的区别
+### Distinctions from Delegate Task
 
-|        | Delegate Task | Mixture of Agents       |
-| ------ | ------------- | ----------------------- |
-| **目的** | 并行执行不同任务      | 同一问题多角度推理               |
-| **隔离** | 完全对话隔离        | 只共享参考回复                 |
-| **模型** | 同模型或可覆盖       | 4 参考 + 1 聚合（5 个 API 调用） |
-| **输出** | 每个任务独立摘要      | 单一综合答案                  |
-| **场景** | 研究、调试、多工作流    | 复杂数学、算法、高难度推理           |
+|             | Delegate Task              | Mixture of Agents                      |
+| ----------- | -------------------------- | -------------------------------------- |
+| **Purpose** | Execute different tasks in parallel | Multi-perspective reasoning for the same question |
+| **Isolation** | Complete conversation isolation | Only shares reference responses        |
+| **Models**  | Same model or overridable  | 4 references + 1 aggregator (5 API calls) |
+| **Output**  | Independent summary for each task | Single synthesized answer              |
+| **Scenario**| Research, debugging, multi-workflow | Complex mathematics, algorithms, high-difficulty reasoning |
 
 ---
 
-## 三、Background Review — 后台经验提炼
+## III. Background Review — Background Experience Refinement
 
-Agent 在对话过程中**自动 fork 一个静默 Agent**，回顾对话并创建/改进 skill。
+During the conversation, the agent **automatically forks a silent agent** to review the dialogue and create/improve skills.
 
-### 触发条件
+### Trigger Conditions
 
 ```python
 # run_agent.py
-self._iters_since_skill  # 每次 tool call +1
-self._skill_nudge_interval = 10  # 每 10 次触发一次 review
+self._iters_since_skill  # +1 for each tool call
+self._skill_nudge_interval = 10  # Triggers a review every 10 times
 ```
 
-### Fork 机制
+### Fork Mechanism
 
 ```python
 def _spawn_background_review(self, messages_snapshot, review_memory, review_skills):
-    # 守护线程（非阻塞）
+    # Daemon thread (non-blocking)
     fork = AIAgent(
         model=self.model,
         provider=self.provider,
-        max_iterations=8,         # 轻量级，最多 8 步
+        max_iterations=8,         # Lightweight, max 8 steps
         quiet_mode=True,          # stdout → /dev/null
-        conversation_history=messages_snapshot,  # 父对话快照
+        conversation_history=messages_snapshot,  # Parent conversation snapshot
         skip_context_files=True,
     )
-    # fork 共享父的 _memory_store 和 skill 目录
-    # 可以调用 skill_manage(action='create/patch')
+    # Fork shares parent's _memory_store and skill directory
+    # Can call skill_manage(action='create/patch')
 ```
 
-### 三种 Review Prompt
+### Three Review Prompts
 
-| Prompt | 关注点 |
-|--------|-------|
-| `_MEMORY_REVIEW_PROMPT` | 提取值得记住的事实 → 写入 MEMORY.md |
-| `_SKILL_REVIEW_PROMPT` | 提炼可复用的流程 → 创建/改进 skill |
-| `_COMBINED_REVIEW_PROMPT` | 同时做 memory + skill review |
+| Prompt                 | Focus                                  |
+| ---------------------- | -------------------------------------- |
+| `_MEMORY_REVIEW_PROMPT` | Extract memorable facts → Write to MEMORY.md |
+| `_SKILL_REVIEW_PROMPT` | Refine reusable processes → Create/improve skill |
+| `_COMBINED_REVIEW_PROMPT` | Perform both memory + skill review simultaneously |
 
-### 与 Delegate Task 的区别
+### Distinctions from Delegate Task
 
-| | Delegate Task | Background Review |
-|---|---|---|
-| **触发** | Agent 主动调用 | 每 10 次迭代自动触发 |
-| **阻塞** | 阻塞父 Agent 等结果 | 守护线程，完全非阻塞 |
-| **隔离** | 完全隔离 | **共享** memory store 和 skill 目录 |
-| **结果** | JSON 结构化摘要 | callback 通知："💾 Skill 'xxx' updated" |
-| **用途** | 并行执行用户任务 | 自动提炼经验、改进 skill |
+|             | Delegate Task             | Background Review                     |
+| ----------- | ------------------------- | ------------------------------------- |
+| **Trigger** | Agent actively invokes    | Automatically triggered every 10 iterations |
+| **Blocking**| Blocks parent agent awaiting results | Daemon thread, completely non-blocking |
+| **Isolation** | Complete isolation        | **Shares** memory store and skill directory |
+| **Result**  | JSON structured summary   | Callback notification: "💾 Skill 'xxx' updated" |
+| **Purpose** | Execute user tasks in parallel | Automatically refines experience, improves skill |
 
 ---
 
-## 四、Agent 间通信机制
+## IV. Agent Communication Mechanisms
 
-Hermes 的 agent 间通信**没有消息队列、没有共享内存、没有 IPC**——全部在单进程内通过 Python 原生机制完成。
+Hermes' inter-agent communication involves **no message queues, no shared memory, and no IPC** — everything is completed within a single process using native Python mechanisms.
 
-### Delegate Task 的通信
+### Delegate Task Communication
 
-父子 agent 通过 **ThreadPoolExecutor + Future** 通信，本质是线程间函数调用：
+Parent and child agents communicate via **ThreadPoolExecutor + Future**, which is essentially inter-thread function calls:
 
 ```python
 # delegate_tool.py line 619-633
-# 父线程：提交任务到线程池
+# Parent thread: Submits tasks to the thread pool
 with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
     for i, t, child in children:
         future = executor.submit(
-            _run_single_child,              # 子 agent 执行函数
+            _run_single_child,              # Child agent execution function
             task_index=i, goal=t["goal"],
             child=child, parent_agent=parent_agent,
         )
         futures[future] = i
 
-    # 父线程：阻塞等待，谁先完成先收谁
+    # Parent thread: Blocks and waits, receives results from whoever finishes first
     for future in as_completed(futures):
-        entry = future.result()             # ← 这就是"通信"
+        entry = future.result()             # ← This is "communication"
         results.append(entry)
 ```
 
 ```python
-# _run_single_child 内部（line 373）
-result = child.run_conversation(user_message=goal)  # 子 agent 跑完
-summary = result.get("final_response") or ""         # 直接取返回值
+# Inside _run_single_child (line 373)
+result = child.run_conversation(user_message=goal)  # Child agent finishes running
+summary = result.get("final_response") or ""         # Directly retrieve return value
 ```
 
-**单任务时更简单**，连线程池都不用（line 612）：
+**Even simpler for single tasks**, no thread pool required (line 612):
 ```python
 result = _run_single_child(0, _t["goal"], child, parent_agent)
 ```
 
-### Mixture of Agents 的通信
+### Mixture of Agents Communication
 
-MoA 连线程都没有，是**同一线程内的异步 HTTP 请求 + 内存聚合**：
+MoA doesn't even use threads; it's **asynchronous HTTP requests + in-memory aggregation within the same thread**:
 
 ```python
 # mixture_of_agents_tool.py line 311
-# 4 个 HTTP 请求并发发出（asyncio 协程，不是多线程）
+# 4 HTTP requests issued concurrently (asyncio coroutines, not multi-threaded)
 model_results = await asyncio.gather(*[
     _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
     for model in ref_models
 ])
 
-# 结果收集到 list 里（纯内存变量）
+# Results collected into a list (pure in-memory variable)
 successful_responses = []
 for model_name, content, success in model_results:
     if success:
         successful_responses.append(content)
 
-# 拼成 prompt 发第 5 个请求
+# Construct prompt and send the 5th request
 aggregator_system_prompt = _construct_aggregator_prompt(
     AGGREGATOR_SYSTEM_PROMPT, successful_responses
 )
 ```
 
-4 个模型的中间回答存在函数栈的 list 里，聚合完成后垃圾回收，不落盘。
+Intermediate responses from the 4 models are stored in a list on the function stack, garbage collected after aggregation, and not persisted to disk.
 
-### 子 agent 之间
+### Between Child Agents
 
-**完全不通信。** 多个子 agent 并行跑在各自的线程里，互不知道对方存在，没有任何协调机制。
+**No communication whatsoever.** Multiple child agents run in parallel in their respective threads, unaware of each other's existence, with no coordination mechanisms.
 
-### 中断时的结果处理
+### Result Handling During Interruption
 
-用户在子 agent 执行期间发新消息时：
+When the user sends a new message during a child agent's execution:
 
 ```python
 # run_agent.py line 2527-2538
 def interrupt(self, message):
     self._interrupt_requested = True
-    # 传播到所有正在跑的子 agent
+    # Propagate to all running child agents
     with self._active_children_lock:
         children_copy = list(self._active_children)
     for child in children_copy:
-        child.interrupt(message)    # 逐个中断
+        child.interrupt(message)    # Interrupt one by one
 ```
 
-中断后：
-- 子 agent 返回 `status: "interrupted"`，已产出的部分结果保留在返回值中
-- 父 agent 的 `_persist_session` 触发，把包含中断结果的消息写入 SQLite
-- **但中断结果不会作为有效答案展示给用户**——父 agent 标记 `completed: False`，进入处理新消息的下一轮
-- 子 agent 自身 `persist_session=False`，不会独立写 DB——其部分结果以"父 agent 对话中的工具返回消息"形式存在 DB 里
+After interruption:
+- The child agent returns `status: "interrupted"`, and any partially produced results are retained in the return value.
+- The parent agent's `_persist_session` is triggered, writing messages containing the interrupted results to SQLite.
+- **However, interrupted results are not displayed to the user as valid answers** — the parent agent marks `completed: False` and proceeds to the next round of processing new messages.
+- The child agent itself has `persist_session=False` and does not write to the DB independently — its partial results exist in the DB as "tool return messages within the parent agent's conversation."
 
-### 通信模型总结
+### Communication Model Summary
 
-| 机制 | 通信方式 | 并发模型 | 中间结果存储 |
-|------|---------|---------|------------|
-| Delegate Task | `Future.result()`（线程间返回值） | ThreadPoolExecutor 多线程 | 不落盘，函数返回值 |
-| Mixture of Agents | `asyncio.gather`（异步协程收集） | 单线程异步 | 不落盘，内存 list |
-| Background Review | 守护线程 fire-and-forget | 单独守护线程 | 直接写 skill/memory 文件 |
+| Mechanism           | Communication Method                | Concurrency Model         | Intermediate Result Storage       |
+| ------------------- | ----------------------------------- | ------------------------- | --------------------------------- |
+| Delegate Task       | `Future.result()` (inter-thread return value) | ThreadPoolExecutor multi-threading | Not persisted to disk, function return value |
+| Mixture of Agents   | `asyncio.gather` (async coroutine collection) | Single-thread async       | Not persisted to disk, in-memory list |
+| Background Review   | Daemon thread fire-and-forget     | Separate daemon thread    | Directly writes to skill/memory files |
 
-**一句话：全部在单进程内完成，没有任何进程间通信。**
+**In summary: Everything is completed within a single process, without any inter-process communication.**
 
 ---
 
-## 五、迭代预算系统
+## V. Iteration Budget System
 
-所有多 Agent 机制共享的资源管理层。
+A resource management layer shared by all multi-agent mechanisms.
 
-### IterationBudget 类
+### IterationBudget Class
 
 ```python
 class IterationBudget:
-    """线程安全的迭代计数器（run_agent.py:167-209）"""
+    """Thread-safe iteration counter (run_agent.py:167-209)"""
     
     def __init__(self, max_total: int):
         self.max_total = max_total
@@ -484,135 +484,135 @@ class IterationBudget:
         self._lock = threading.Lock()
     
     def consume(self) -> bool:
-        """原子检查+递减。每次 LLM turn 调用一次。"""
+        """Atomic check + decrement. Called once per LLM turn."""
     
     def refund(self) -> None:
-        """退还一次（execute_code 调用后退还，鼓励多验证）。"""
+        """Refunds one (refunded after execute_code call, encourages more verification)."""
     
     @property
     def remaining(self) -> int: ...
 ```
 
-### 预算隔离
+### Budget Isolation
 
 ```text
-父 Agent:  IterationBudget(90)   ← 默认 90
-子代理 A:  IterationBudget(50)   ← 独立，不消耗父预算
-子代理 B:  IterationBudget(50)   ← 独立
-子代理 C:  IterationBudget(50)   ← 独立
+Parent Agent:  IterationBudget(90)   ← Default 90
+Child Agent A: IterationBudget(50)   ← Independent, does not consume parent's budget
+Child Agent B: IterationBudget(50)   ← Independent
+Child Agent C: IterationBudget(50)   ← Independent
 ──────────────────────────────
-理论总迭代: 90 + 150 = 240
+Theoretical total iterations: 90 + 150 = 240
 ```
 
-### 预算压力警告
+### Budget Pressure Warnings
 
 ```python
-self._budget_caution_threshold = 0.7   # 70% — "开始收尾"
-self._budget_warning_threshold = 0.9   # 90% — "立即响应"
+self._budget_caution_threshold = 0.7   # 70% — "Start wrapping up"
+self._budget_warning_threshold = 0.9   # 90% — "Respond immediately"
 ```
 
-警告注入到工具结果 JSON 中（不破坏消息结构、不使 prompt cache 失效）。
+Warnings are injected into the tool result JSON (without breaking message structure or invalidating the prompt cache).
 
 ---
 
-## 六、配置
+## VI. Configuration
 
 ```yaml
 # config.yaml
 delegation:
-  provider: openrouter            # 可选：子代理用专用 provider
-  model: google/gemini-3-flash    # 可选：子代理用廉价模型
-  max_iterations: 50              # 每个子代理最大迭代次数
-  reasoning_effort: low           # 可选：控制子代理推理深度（low/medium/high/xhigh）
-  # 或直接指定端点
+  provider: openrouter            # Optional: dedicated provider for child agents
+  model: google/gemini-3-flash    # Optional: cheaper model for child agents
+  max_iterations: 50              # Max iterations per child agent
+  reasoning_effort: low           # Optional: controls child agent reasoning depth (low/medium/high/xhigh)
+  # Or specify endpoint directly
   base_url: https://api.openai.com/v1
   api_key: sk-xxx
 ```
 
-### 使用示例
+### Usage Examples
 
 ```python
-# 单任务
+# Single-task
 delegate_task(
     goal="Debug the login failure issue",
     context="User reports 500 error on /api/login",
     toolsets=["terminal", "file"]
 )
 
-# 并行 3 个任务
+# 3 parallel tasks
 delegate_task(tasks=[
     {"goal": "Fix login bug", "toolsets": ["terminal", "file"]},
     {"goal": "Update API docs", "toolsets": ["terminal", "file"]},
     {"goal": "Run test suite", "toolsets": ["terminal"]},
 ])
 
-# 多模型协同推理
-mixture_of_agents(user_prompt="证明 P ≠ NP 的已知最强结果是什么？")
+# Multi-model collaborative reasoning
+mixture_of_agents(user_prompt="What is the strongest known result proving P ≠ NP?")
 ```
 
-## 多 Agent 的两个层面
+## Two Levels of Multi-Agent
 
-Hermes 实际上有两种多 Agent 方案，服务于不同场景：
+Hermes actually offers two multi-agent solutions, serving different scenarios:
 
-|                  | 会话内 multi-agent（本页）   | 多 Profile                 |
-| ---------------- | --------------------- | ------------------------- |
-| 粒度               | 一个会话内的子任务             | 完全独立的 agent 实例            |
-| 上下文              | 子 agent 继承父 agent 的对话 | 完全隔离，互不可见                 |
-| terminal backend | 继承父 agent，**不能切换**    | 每个 Profile **独立配置**       |
-| 记忆               | 共享（同一个 MemoryManager） | 各自独立的 MEMORY.md / USER.md |
-| 模型               | 可以不同                  | 可以不同                      |
-| 协作方式             | 自动派发 + 结果回传           | 人工切换，无自动协作                |
+|                     | In-session Multi-Agent (this page) | Multi-Profile                          |
+| ------------------- | ---------------------------------- | -------------------------------------- |
+| **Granularity**     | Subtasks within a single session   | Completely independent agent instances |
+| **Context**         | Child agents inherit the parent agent's conversation | Completely isolated, mutually invisible |
+| **Terminal Backend**| Inherits from parent agent, **cannot switch** | Each Profile is **independently configured** |
+| **Memory**          | Shared (same MemoryManager)        | Separate MEMORY.md / USER.md for each |
+| **Models**          | Can be different                   | Can be different                       |
+| **Collaboration Method** | Automatic dispatch + result feedback | Manual switching, no automatic collaboration |
 
-**会话内 multi-agent 是"一个大脑指挥多只手"**——适合一次任务内的并行分工。
+**In-session multi-agent is "one brain commanding multiple hands"** — suitable for parallel division of labor within a single task.
 
-**多 Profile 是"多个独立的人各管各的"**——适合按职能隔离不同安全边界、模型、技能集。例如：`coder` Profile 用 `local` backend 做日常开发，`ops` Profile 用 `docker` backend 做危险操作。
+**Multi-Profile is "multiple independent individuals each minding their own business"** — suitable for isolating different security boundaries, models, and skill sets by function. For example: a `coder` Profile uses the `local` backend for daily development, while an `ops` Profile uses the `docker` backend for risky operations.
 
-### 多 Profile 之间能通信吗？
+### Can Multi-Profiles Communicate?
 
-**没有原生通信通道。** 每个 Profile 是独立进程、独立 DB、独立记忆，互不知道对方存在。
+**There is no native communication channel.** Each Profile is an independent process, independent DB, and independent memory, unaware of each other's existence.
 
-但可以通过**消息平台间接交互**——两个 Profile 各绑一个 bot，在同一个频道里：
+However, they can **interact indirectly via messaging platforms** — two Profiles, each bound to a bot, in the same channel:
 
 ```text
-Profile A (Bot A) → send_message 工具主动发消息到频道
+Profile A (Bot A) → send_message tool actively sends message to channel
                               ↓
-                      Discord / Slack 频道（消息中转）
+                      Discord / Slack Channel (message relay)
                               ↓
-Profile B (Bot B) → ALLOW_BOTS=all → 收到，当普通用户消息处理
+Profile B (Bot B) → ALLOW_BOTS=all → Received, processed as a regular user message
 ```
 
-Discord 和 Slack 都支持 `allow_bots` 配置（三模式：none/mentions/all）：
+Discord and Slack both support `allow_bots` configuration (three modes: none/mentions/all):
 
 ```bash
-# Discord — Bot B 的 .env
-DISCORD_ALLOW_BOTS=none       # 默认：忽略所有 bot 消息
-DISCORD_ALLOW_BOTS=mentions   # 只接收 @提及自己的 bot 消息
-DISCORD_ALLOW_BOTS=all        # 接收所有 bot 消息
+# Discord — Bot B's .env
+DISCORD_ALLOW_BOTS=none       # Default: ignores all bot messages
+DISCORD_ALLOW_BOTS=mentions   # Only receives bot messages that @mention itself
+DISCORD_ALLOW_BOTS=all        # Receives all bot messages
 
-# Slack — Bot B 的 .env
-SLACK_ALLOW_BOTS=none         # 同上
+# Slack — Bot B's .env
+SLACK_ALLOW_BOTS=none         # Same as above
 SLACK_ALLOW_BOTS=mentions
 SLACK_ALLOW_BOTS=all
 ```
 
-Discord 还有**多 bot 过滤**：消息 @了其他 bot 但没 @自己时自动跳过，避免多 bot 频道互相干扰。
+Discord also features **multi-bot filtering**: messages that @mention other bots but not themselves are automatically skipped, preventing interference in multi-bot channels.
 
-**注意**：这不是 Hermes 设计的 agent 间通信功能，是两个独立 bot 通过平台消息碰巧交互。有延迟、无事务保证，且容易产生死循环（A 发 → B 回 → A 又回 → 无限循环），使用时需注意控制。
+**Note**: This is not an inter-agent communication feature designed by Hermes, but rather two independent bots incidentally interacting via platform messages. It involves latency, lacks transactional guarantees, and can easily lead to deadlocks (A sends → B replies → A replies again → infinite loop), so caution and control are required during use.
 
-详见 → [[configuration-and-profiles]]
+See also → [[configuration-and-profiles]]
 
-## 相关页面
+## Related Pages
 
-- [[configuration-and-profiles]] — 多 Profile 架构（另一种多 Agent 方案）
-- [[tool-registry-architecture]] — 子代理通过 registry 获取受限工具集
-- [[auxiliary-client-architecture]] — 子代理可配置独立的辅助模型
-- [[credential-pool-and-isolation]] — 凭证池共享与轮换
-- [[skills-system-architecture]] — Background Review 自动创建/改进的 skill 存储在这里
-- [[trajectory-and-data-generation]] — Batch Runner（Nous 内部训练工具，不属于 Agent 运行时）
+- [[configuration-and-profiles]] — Multi-Profile Architecture (Another Multi-Agent Solution)
+- [[tool-registry-architecture]] — Child Agents Obtain Restricted Toolsets via Registry
+- [[auxiliary-client-architecture]] — Child Agents Can Configure Independent Auxiliary Models
+- [[credential-pool-and-isolation]] — Credential Pool Sharing and Rotation
+- [[skills-system-architecture]] — Skills Automatically Created/Improved by Background Review are Stored Here
+- [[trajectory-and-data-generation]] — Batch Runner (Nous internal training tool, not part of Agent runtime)
 
-## 相关文件
+## Related Files
 
-- `tools/delegate_tool.py` — 子代理委派实现
-- `tools/mixture_of_agents_tool.py` — 多模型协同推理
-- `tools/send_message_tool.py` — 跨平台消息投递（不属于多 Agent，归类于 messaging-gateway）
-- `run_agent.py` — IterationBudget 类、Background Review、中断传播
+- `tools/delegate_tool.py` — Child Agent Delegation Implementation
+- `tools/mixture_of_agents_tool.py` — Multi-Model Collaborative Reasoning
+- `tools/send_message_tool.py` — Cross-Platform Message Delivery (Not part of Multi-Agent, categorized under messaging-gateway)
+- `run_agent.py` — IterationBudget Class, Background Review, Interruption Propagation

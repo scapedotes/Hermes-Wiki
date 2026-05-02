@@ -4,16 +4,16 @@ created: 2026-04-07
 updated: 2026-04-07
 type: concept
 tags: [toolset, tool, tool-registry, architecture]
-sources: [hermes-agent 源码分析 2026-04-07]
+sources: [Hermes Agent Source Code Analysis 2026-04-07]
 ---
 
-# 工具集系统
+# Toolsets System
 
-## 概述
+## Overview
 
-Toolsets 是 Hermes Agent 的**工具分组系统**，允许将工具组合成有意义的集合，并为不同场景/平台启用不同的工具集。
+Toolsets is Hermes Agent's **tool grouping system**, allowing tools to be combined into meaningful collections and enabling different toolsets for various scenarios/platforms.
 
-## 核心设计
+## Core Design
 
 ```python
 # toolsets.py
@@ -52,56 +52,56 @@ _HERMES_CORE_TOOLS = [
 ]
 ```
 
-## 工具集定义
+## Toolset Definition
 
 ```python
 TOOLSETS = {
-    # 基础工具集
+    # Basic Toolset
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
-        "includes": []  # 不包含其他工具集
+        "includes": []  # Does not include other toolsets
     },
     
-    # 组合工具集
+    # Composite Toolset
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],
-        "includes": ["web", "file"]  # 组合其他工具集
+        "includes": ["web", "file"]  # Combines other toolsets
     },
     
-    # 平台特定工具集
+    # Platform-Specific Toolsets
     "hermes-telegram": {
         "description": "Telegram bot toolset",
-        "tools": _HERMES_CORE_TOOLS,  # 使用核心工具列表
+        "tools": _HERMES_CORE_TOOLS,  # Uses the core tools list
         "includes": []
     },
     
     "hermes-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains)",
-        "tools": [...],  # 编码专用，无消息/音频/clarify
+        "tools": [...],  # Code-specific, no messaging/audio/clarify
         "includes": []
     },
     
     "hermes-api-server": {
         "description": "OpenAI-compatible API server",
-        "tools": [...],  # 完整工具集，无交互 UI 工具
+        "tools": [...],  # Full toolset, no interactive UI tools
         "includes": []
     },
     
-    # 注意："all" 不是 TOOLSETS 的一个条目
-    # 它在 resolve_toolset() 中作为特殊情况处理
+    # Note: "all" is not an entry in TOOLSETS
+    # It's handled as a special case in resolve_toolset()
     # if name in {"all", "*"}: ...
 }
 ```
 
-## 递归解析
+## Recursive Resolution
 
 ```python
 def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
-    """递归解析工具集，处理组合依赖"""
+    """Recursively resolves a toolset, handling composite dependencies"""
     
-    # 特殊别名：all 或 *
+    # Special aliases: all or *
     if name in {"all", "*"}:
         all_tools = set()
         for toolset_name in get_toolset_names():
@@ -109,17 +109,17 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
             all_tools.update(resolved)
         return list(all_tools)
     
-    # 循环检测
+    # Cycle detection
     if name in visited:
-        return []  # 静默返回
+        return []  # Return silently
     
     visited.add(name)
     toolset = TOOLSETS.get(name)
     
-    # 收集直接工具
+    # Collect direct tools
     tools = set(toolset.get("tools", []))
     
-    # 递归解析包含的工具集
+    # Recursively resolve included toolsets
     for included_name in toolset.get("includes", []):
         included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
@@ -127,35 +127,35 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     return list(tools)
 ```
 
-## 平台工具集
+## Platform Toolsets
 
-| 工具集 | 平台 | 特点 |
-|--------|------|------|
-| `hermes-cli` | 终端 CLI | 完整工具集 |
-| `hermes-telegram` | Telegram | 完整工具集 |
-| `hermes-discord` | Discord | 完整工具集 |
-| `hermes-whatsapp` | WhatsApp | 完整工具集 |
-| `hermes-slack` | Slack | 完整工具集 |
-| `hermes-signal` | Signal | 完整工具集 |
-| `hermes-homeassistant` | Home Assistant | 智能家居控制 |
-| `hermes-email` | Email (IMAP/SMTP) | 邮件交互 |
-| `hermes-sms` | SMS (Twilio) | 短信，字符限制 |
-| `hermes-mattermost` | Mattermost | 自托管团队消息 |
-| `hermes-matrix` | Matrix | 去中心化加密消息 |
-| `hermes-dingtalk` | 钉钉 | 企业消息 |
-| `hermes-feishu` | 飞书/Lark | 企业消息 |
-| `hermes-wecom` | 企业微信 | 企业微信消息 |
-| `hermes-webhook` | Webhook | 接收外部事件 |
-| `hermes-acp` | 编辑器集成 | 编码专用 |
-| `hermes-api-server` | HTTP API | 通过 HTTP 访问 |
+| Toolset             | Platform             | Characteristics            |
+|---------------------|----------------------|----------------------------|
+| `hermes-cli`        | Terminal CLI         | Full toolset               |
+| `hermes-telegram`   | Telegram             | Full toolset               |
+| `hermes-discord`    | Discord              | Full toolset               |
+| `hermes-whatsapp`   | WhatsApp             | Full toolset               |
+| `hermes-slack`      | Slack                | Full toolset               |
+| `hermes-signal`     | Signal               | Full toolset               |
+| `hermes-homeassistant`| Home Assistant       | Smart home control         |
+| `hermes-email`      | Email (IMAP/SMTP)    | Email interaction          |
+| `hermes-sms`        | SMS (Twilio)         | SMS, character limited     |
+| `hermes-mattermost` | Mattermost           | Self-hosted team messaging |
+| `hermes-matrix`     | Matrix               | Decentralized encrypted messaging |
+| `hermes-dingtalk`   | DingTalk             | Enterprise messaging       |
+| `hermes-feishu`     | Feishu/Lark          | Enterprise messaging       |
+| `hermes-wecom`      | WeCom                | Enterprise messaging       |
+| `hermes-webhook`    | Webhook              | Receive external events    |
+| `hermes-acp`        | Editor Integration   | Coding specific            |
+| `hermes-api-server` | HTTP API             | Accessed via HTTP          |
 
-## 插件扩展
+## Plugin Extension
 
-工具集支持插件动态注册：
+Toolsets support dynamic plugin registration:
 
 ```python
 def _get_plugin_toolset_names() -> Set[str]:
-    """返回插件注册的工具集名称"""
+    """Returns the names of toolsets registered by plugins"""
     from tools.registry import registry
     return {
         entry.toolset
@@ -164,22 +164,22 @@ def _get_plugin_toolset_names() -> Set[str]:
     }
 ```
 
-## 工具注册表
+## Tool Registry
 
 ```python
 # tools/registry.py
 class ToolRegistry:
     def register(self, name, toolset, schema, handler, ...):
-        """注册工具到中央注册表（需要 toolset 参数）"""
+        """Registers a tool to the central registry (requires toolset parameter)"""
     
     def get_schema(self, name):
-        """获取工具的 schema 定义"""
+        """Gets the schema definition for a tool"""
     
     def get_all_tool_names(self):
-        """获取所有已注册工具名称"""
+        """Gets the names of all registered tools"""
 ```
 
-每个工具文件在导入时自动注册：
+Each tool file automatically registers upon import:
 
 ```python
 # tools/terminal_tool.py
@@ -194,9 +194,9 @@ registry.register(
 )
 ```
 
-## 工具启用/禁用
+## Tool Enabling/Disabling
 
-通过 `hermes tools` 命令或配置管理：
+Managed via the `hermes tools` command or configuration:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -206,27 +206,28 @@ tools:
     discord: ["text_to_speech"]
 ```
 
-## 文件依赖链
+## File Dependency Chain
 
 ```
-tools/registry.py  (无依赖 — 被所有工具文件导入)
+tools/registry.py  (No dependencies — imported by all tool files)
        ↑
-tools/*.py  (每个在导入时调用 registry.register())
+tools/*.py  (Each calls registry.register() upon import)
        ↑
-model_tools.py  (导入 tools/registry + 触发工具发现)
+model_tools.py  (Imports tools/registry + triggers tool discovery)
        ↑
 run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
-## 相关页面
+## Related Pages
 
-- [[tool-registry-architecture]] — 中央工具注册表（Registry 按 toolset 组织工具）
-- [[model-tools-dispatch]] — 工具编排层通过 toolset 过滤工具定义
-- [[mcp-and-plugins]] — 插件动态注册扩展工具集
+- [[tool-registry-architecture]] — Central Tool Registry (Registry organizes tools by toolset)
+- [[model-tools-dispatch]] — Tool Orchestration Layer filters tool definitions by toolset
+- [[mcp-and-plugins]] — Plugin Dynamic Registration for Toolset Extension
 
-## 相关文件
+## Related Files
 
-- `toolsets.py` — Toolset 定义和解析
-- `tools/registry.py` — 中央工具注册表
-- `model_tools.py` — 工具编排，`_discover_tools()`, `handle_function_call()`
-- `hermes_cli/tools_config.py` — 工具启用/禁用配置
+- `toolsets.py` — Toolset Definition and Resolution
+- `tools/registry.py` — Central Tool Registry
+- `model_tools.py` — Tool Orchestration, `_discover_tools()`, `handle_function_call()`
+- `hermes_cli/tools_config.py` — Tool Enabling/Disabling Configuration
+---

@@ -7,63 +7,63 @@ tags: [skill, architecture, module, prompt-builder]
 sources: [tools/skills_tool.py, tools/skill_manager_tool.py, tools/skills_hub.py, tools/skills_guard.py, run_agent.py, agent/prompt_builder.py, hermes_cli/plugins.py, agent/skill_utils.py]
 ---
 
-# 技能系统架构
+# Skills System Architecture
 
-## 概述
+## Overview
 
-Hermes Agent 的技能系统是一个**渐进式披露（Progressive Disclosure）**架构，灵感来自 Anthropic 的 Claude Skills 系统。核心理念是：只在需要时加载完整指令，平时只保留轻量元数据，以节省 token 预算。
+The Hermes Agent's skill system adopts a **Progressive Disclosure** architecture, inspired by Anthropic's Claude Skills system. The core idea is to load full instructions only when needed, retaining lightweight metadata otherwise to conserve token budget.
 
-## 核心组件
+## Core Components
 
-### 1. 工具层 (`tools/skills_tool.py`)
+### 1. Tool Layer (`tools/skills_tool.py`)
 
-提供两个工具：
-- **`skills_list`** — 返回技能元数据列表（名称、描述、分类），token 效率高
-- **`skill_view`** — 加载完整技能内容（SKILL.md + 可选引用文件）
+Provides two tools:
+- **`skills_list`** — Returns a list of skill metadata (name, description, category), highly token-efficient.
+- **`skill_view`** — Loads full skill content (SKILL.md + optional reference files).
 
-### 2. Prompt 构建层 (`agent/prompt_builder.py`)
+### 2. Prompt Construction Layer (`agent/prompt_builder.py`)
 
-在每次系统提示构建时：
-- 扫描 `~/.hermes/skills/` 目录
-- 解析每个 SKILL.md 的 YAML frontmatter
-- 构建技能索引清单注入到系统提示中
-- 使用 [[prompt-builder-architecture]] 缓存结果
+During each system prompt construction:
+- Scans the `~/.hermes/skills/` directory.
+- Parses the YAML frontmatter of each SKILL.md.
+- Constructs a skill index manifest injected into the system prompt.
+- Caches results using [[prompt-builder-architecture]].
 
-### 3. 技能目录结构
+### 3. Skill Directory Structure
 
 ```
 ~/.hermes/skills/
 ├── my-skill/
-│   ├── SKILL.md              # 主指令文件（必需）
-│   ├── references/           # 支持文档
+│   ├── SKILL.md              # Main instruction file (required)
+│   ├── references/           # Support documentation
 │   │   ├── api.md
 │   │   └── examples.md
-│   ├── templates/            # 输出模板
-│   └── assets/               # 补充文件（agentskills.io 标准）
-└── category/                 # 分类目录
+│   ├── templates/            # Output templates
+│   └── assets/               # Supplementary files (agentskills.io standard)
+└── category/                 # Category directory
     └── another-skill/
         └── SKILL.md
 ```
 
-### 4. SKILL.md 格式
+### 4. SKILL.md Format
 
 ```yaml
 ---
-name: skill-name                    # 必需，最多 64 字符
-description: Brief description      # 必需，最多 1024 字符
-version: 1.0.0                      # 可选
-license: MIT                        # 可选
-platforms: [macos]                  # 可选 — 限制 OS 平台
-prerequisites:                      # 可选 — 运行时要求
-  env_vars: [API_KEY]               #   环境变量
-  commands: [curl, jq]              #   命令检查
-setup:                              # 可选 — 交互式设置
-  help: "Get key at https://..."    #   帮助文本
-  collect_secrets:                  #   密钥收集
+name: skill-name                    # Required, max 64 characters
+description: Brief description      # Required, max 1024 characters
+version: 1.0.0                      # Optional
+license: MIT                        # Optional
+platforms: [macos]                  # Optional — restricts OS platforms
+prerequisites:                      # Optional — runtime requirements
+  env_vars: [API_KEY]               #   Environment variables
+  commands: [curl, jq]              #   Command checks
+setup:                              # Optional — interactive setup
+  help: "Get key at https://..."    #   Help text
+  collect_secrets:                  #   Secret collection
     - env_var: API_KEY
       prompt: "Enter your API key"
       secret: true
-metadata:                           # 可选
+metadata:                           # Optional
   hermes:
     tags: [fine-tuning, llm]
     related_skills: [peft, lora]
@@ -74,19 +74,19 @@ metadata:                           # 可选
 Full instructions and content here...
 ```
 
-## 技能发现流程
+## Skill Discovery Process
 
 ```python
-# 1. 获取所有技能目录
+# 1. Get all skill directories
 get_all_skills_dirs() → [Path, Path, ...]
 
-# 2. 解析每个 SKILL.md 的 frontmatter
+# 2. Parse frontmatter of each SKILL.md
 parse_frontmatter(raw_content) → (dict, body)
 
-# 3. 检查平台兼容性
+# 3. Check platform compatibility
 skill_matches_platform(frontmatter) → bool
 
-# 4. 提取条件激活规则
+# 4. Extract conditional activation rules
 extract_skill_conditions(frontmatter) → {
     "requires_tools": [...],
     "requires_toolsets": [...],
@@ -94,34 +94,34 @@ extract_skill_conditions(frontmatter) → {
     "fallback_for_toolsets": [...]
 }
 
-# 5. 构建技能索引注入到系统提示
+# 5. Build skill index and inject into system prompt
 _build_skills_index(available_tools, available_toolsets) → str
 ```
 
-## 条件激活机制
+## Conditional Activation Mechanism
 
-技能可以根据当前可用的工具/工具集条件性显示：
+Skills can be conditionally displayed based on currently available tools/toolsets:
 
-- **`requires_tools`** — 需要特定工具才显示
-- **`requires_toolsets`** — 需要特定工具集才显示
-- **`fallback_for_tools`** — 当主工具可用时隐藏（作为备选）
-- **`fallback_for_toolsets`** — 当主工具集可用时隐藏
+- **`requires_tools`** — Requires specific tools to be displayed.
+- **`requires_toolsets`** — Requires specific toolsets to be displayed.
+- **`fallback_for_tools`** — Hidden when primary tools are available (as a fallback).
+- **`fallback_for_toolsets`** — Hidden when primary toolsets are available.
 
-## 平台过滤
+## Platform Filtering
 
-通过 `platforms` frontmatter 字段限制技能只在特定 OS 上加载：
+The `platforms` frontmatter field restricts skills to be loaded only on specific OS:
 - `macos` → `sys.platform == "darwin"`
 - `linux` → `sys.platform == "linux"`
 - `windows` → `sys.platform == "win32"`
 
-## 插件命名空间技能（2026-04-14）
+## Plugin Namespaced Skills (2026-04-14)
 
-除了 `~/.hermes/skills/` 的扁平目录扫描,插件还可以注册**带命名空间的技能**,避免与内置技能重名冲突。
+In addition to the flat directory scan of `~/.hermes/skills/`, plugins can also register **namespaced skills** to avoid naming conflicts with built-in skills.
 
-### 注册方式
+### Registration Method
 
 ```python
-# 插件的 __init__.py
+# Plugin's __init__.py
 def register(ctx):
     ctx.register_skill(
         name="deploy",
@@ -130,188 +130,188 @@ def register(ctx):
     )
 ```
 
-`PluginContext.register_skill()` 内部把它存为 `{plugin_name}:{name}` 格式的 qualified name,例如插件 `myops` 注册的 `deploy` 技能实际名字是 `myops:deploy`。
+`PluginContext.register_skill()` internally stores it as a qualified name in the format `{plugin_name}:{name}`, e.g., a `deploy` skill registered by the `myops` plugin would actually be named `myops:deploy`.
 
-**校验规则**(`hermes_cli/plugins.py:267`):
-- `name` 不能含 `:`(命名空间由插件名自动派生)
-- `name` 必须匹配 `[a-zA-Z0-9_-]+`
-- `path` 指向的 SKILL.md 必须存在
+**Validation Rules** (`hermes_cli/plugins.py:267`):
+- `name` cannot contain `:` (namespace is automatically derived from plugin name).
+- `name` must match `[a-zA-Z0-9_-]+`.
+- `path` must point to an existing SKILL.md.
 
-### 调度逻辑
+### Dispatch Logic
 
-`skill_view(name)` 在 `tools/skills_tool.py:822` 检测 `:` 分隔符:
-- **带 `:` 的名字** → `parse_qualified_name(name)` → 路由到 `_serve_plugin_skill(namespace, bare)`
-- **裸名字** → 继续走原有的 `~/.hermes/skills/` 扁平树扫描
+`skill_view(name)` in `tools/skills_tool.py:822` detects the `:` separator:
+- **Names with `:`** → `parse_qualified_name(name)` → Route to `_serve_plugin_skill(namespace, bare)`.
+- **Bare names** → Continue with the original `~/.hermes/skills/` flat tree scan.
 
-插件技能加载时会跑完整防护:
-1. 插件被 disable → 返回错误(含 `hermes plugins enable` 提示)
-2. 平台不匹配(`skill_matches_platform`) → 返回 UNSUPPORTED
-3. 注入模式扫描(`_INJECTION_PATTERNS`) → 记日志但仍加载(与本地技能一致)
-4. 返回时附带 **bundle context banner**,列出同一插件的其他技能供 agent 参考
+Plugin skill loading runs full protection:
+1. Plugin is disabled → Returns an error (including `hermes plugins enable` hint).
+2. Platform mismatch (`skill_matches_platform`) → Returns UNSUPPORTED.
+3. Injection pattern scan (`_INJECTION_PATTERNS`) → Logs but still loads (consistent with local skills).
+4. Returns with a **bundle context banner**, listing other skills from the same plugin for agent reference.
 
-### 不进系统提示索引
+### Not Included in System Prompt Index
 
-**关键区别**:插件技能**不出现在** system prompt 的 `<available_skills>` 清单里,它们是**显式 opt-in**——agent 必须知道名字(通过文档或插件 README)才能调用 `skill_view("myops:deploy")`。
+**Key difference**: Plugin skills **do not appear** in the `<available_skills>` list in the system prompt. They are **explicitly opt-in** — the agent must know the name (via documentation or plugin README) to call `skill_view("myops:deploy")`.
 
-这样设计的原因:
-- 避免插件污染主提示词(系统提示已经很大)
-- 避免 prefix cache 因为第三方插件数量波动而失效
-- 用户装了什么插件,agent 不应该自动全部感知
+Reasons for this design:
+- Avoids plugin clutter in the main prompt (system prompt is already substantial).
+- Prevents prefix cache invalidation due to fluctuations in third-party plugin count.
+- The agent should not automatically perceive all plugins installed by the user.
 
-### 相关 API
+### Related APIs
 
-| 符号 | 位置 | 用途 |
+| Symbol | Location | Purpose |
 |---|---|---|
-| `PluginContext.register_skill()` | `hermes_cli/plugins.py:267` | 插件注册入口 |
-| `PluginManager._plugin_skills` | `hermes_cli/plugins.py` | 注册表存储 |
-| `parse_qualified_name()` | `agent/skill_utils.py:451` | 分解 `ns:bare` |
-| `is_valid_namespace()` | `agent/skill_utils.py` | 命名空间合法性校验 |
-| `_serve_plugin_skill()` | `tools/skills_tool.py:718` | 加载 + 防护 + banner |
-| `_INJECTION_PATTERNS` | `tools/skills_tool.py`(模块级) | 与本地技能共享的注入检测
+| `PluginContext.register_skill()` | `hermes_cli/plugins.py:267` | Plugin registration entry point |
+| `PluginManager._plugin_skills` | `hermes_cli/plugins.py` | Registry storage |
+| `parse_qualified_name()` | `agent/skill_utils.py:451` | Decomposes `ns:bare` |
+| `is_valid_namespace()` | `agent/skill_utils.py` | Namespace validity check |
+| `_serve_plugin_skill()` | `tools/skills_tool.py:718` | Load + protection + banner |
+| `_INJECTION_PATTERNS` | `tools/skills_tool.py`(module-level) | Injection detection shared with local skills |
 
-## 密钥管理
+## Secret Management
 
-技能可以声明需要的环境变量，系统会：
-1. 检查 `~/.hermes/.env` 是否已设置
-2. 如果缺失且在 CLI 模式，通过回调交互式收集
-3. 在 Gateway 模式，提示用户手动配置
-4. 保存后持久化到 `.env` 文件
+Skills can declare required environment variables, and the system will:
+1. Check if `~/.hermes/.env` is already set.
+2. If missing and in CLI mode, interactively collect via callback.
+3. In Gateway mode, prompt the user for manual configuration.
+4. Persist to `.env` file after saving.
 
-## 自动 Skill Review（Background Review）
+## Automatic Skill Review (Background Review)
 
-Hermes 不只被动使用 Skill，还能**自主创建和更新 Skill**。这是 Hermes 的"自我进化"机制。
+Hermes not only passively uses Skills but can also **autonomously create and update Skills**. This is Hermes' "self-evolution" mechanism.
 
-### 触发条件
+### Trigger Conditions
 
-三个条件同时满足时触发：
+Triggered when three conditions are met simultaneously:
 
 ```python
-if (self._skill_nudge_interval > 0                          # 功能未禁用
-        and self._iters_since_skill >= self._skill_nudge_interval  # 工具调用累计达标
-        and "skill_manage" in self.valid_tool_names):        # skill_manage 工具可用
+if (self._skill_nudge_interval > 0                          # Feature not disabled
+        and self._iters_since_skill >= self._skill_nudge_interval  # Accumulated tool calls meet threshold
+        and "skill_manage" in self.valid_tool_names):        # skill_manage tool is available
 ```
 
 ```yaml
 # config.yaml
 skills:
-  creation_nudge_interval: 15   # 每累计 15 次工具调用触发一次 review（0 = 禁用）
+  creation_nudge_interval: 15   # Triggers a review every 15 accumulated tool calls (0 = disabled)
 ```
 
-注意：计数器累加的是**工具循环次数**（不是对话轮次），跨轮次持续累加。agent 主动调用 `skill_manage` 时计数器归零。
+Note: The counter accumulates **tool loop iterations** (not conversation turns) and persists across turns. The counter resets when the agent explicitly calls `skill_manage`.
 
-### 执行流程
+### Execution Flow
 
 ```text
-工具调用累计达到 15 次
+Tool calls accumulate to 15
     ↓
-轮次结束后，派生后台 agent（独立线程，max_iterations=8）
+After the turn, a background agent is spawned (separate thread, max_iterations=8)
     ↓
-后台 agent 拿到完整对话快照，审查：
-  "有没有经过试错、调整方向、或用户期望不同做法的非平凡经验？"
+The background agent takes a full conversation snapshot and reviews:
+  "Are there any non-trivial experiences involving trial-and-error, course correction, or user expectations for different approaches?"
     ↓
-三种结果：
-  ├── 有现成 skill → 调用 skill_manage 更新
-  ├── 没有但值得新建 → 调用 skill_manage 创建
-  └── 没什么值得存的 → "Nothing to save." 结束
+Three possible outcomes:
+  ├── Existing skill found → Calls skill_manage to update.
+  ├── None, but worth creating → Calls skill_manage to create.
+  └── Nothing worth saving → "Nothing to save." Ends.
     ↓
-终端打印：💾 Skill "docker-network-debug" created
+Terminal output: 💾 Skill "docker-network-debug" created
 ```
 
-### 设计特点
+### Design Characteristics
 
-- **不阻塞用户**：在回复用户之后才启动，不占用对话延迟
-- **不修改主对话**：后台 agent 独立运行，不影响主 agent 的消息历史
-- **共享记忆存储**：后台 agent 与主 agent 共享 `_memory_store`，skill 写入立即可用
-- **与 Memory Nudge 可合并**：当 skill review 和 memory review 同时触发时，使用合并 prompt 一次处理
+- **Non-blocking for user**: Initiates after responding to the user, not occupying conversation latency.
+- **Does not modify main conversation**: The background agent runs independently and does not affect the main agent's message history.
+- **Shared memory storage**: The background agent shares `_memory_store` with the main agent, making skills immediately available upon writing.
+- **Mergeable with Memory Nudge**: When both skill review and memory review are triggered simultaneously, a merged prompt is used for a single processing.
 
-### 与手动创建的区别
+### Differences from Manual Creation
 
-| | 手动创建（用户指令） | 自动创建（Background Review） |
+| | Manual Creation (User Instruction) | Automatic Creation (Background Review) |
 |---|---|---|
-| 触发方式 | 用户说"帮我创建一个 skill" | 系统计数器自动触发 |
-| 内容来源 | 用户指定 | 后台 agent 从对话中提炼 |
-| 质量 | 用户控制 | agent 自主判断，可能创建也可能跳过 |
-| LLM 消耗 | 主对话的一部分 | 额外消耗（后台 agent 最多 8 轮迭代） |
+| Trigger Method | User says "help me create a skill" | System counter automatically triggers |
+| Content Source | User specified | Background agent extracts from conversation |
+| Quality | User controlled | Agent autonomously decides, may create or skip |
+| LLM Consumption | Part of the main conversation | Additional consumption (background agent max 8 iterations) |
 
-## Curator — 后台技能维护（v2026.4.23+）
+## Curator — Background Skill Maintenance (v2026.4.23+)
 
-新增**辅助模型驱动的后台维护机制**（`agent/curator.py`，869 行 + `hermes_cli/curator.py`，235 行 + `tools/skill_usage.py`）。定期审查**agent 创建的**技能，跟踪使用情况，并把闲置 skill 经过状态机转换归档。
+Introduces an **auxiliary model-driven background maintenance mechanism** (`agent/curator.py`, 869 lines + `hermes_cli/curator.py`, 235 lines + `tools/skill_usage.py`). It periodically reviews **agent-created** skills, tracks usage, and archives idle skills through state machine transitions.
 
-### 不变量（load-bearing invariants）
+### Invariants (load-bearing)
 
-- **永不触碰** bundled 或 hub-installed 技能（`.bundled_manifest` + `.hub/lock.json` 双过滤）
-- **永不自动删除** —— 只归档，可通过 `hermes curator restore <skill>` 恢复
-- **Pinned skills 跳过所有自动转换**：`tools/skill_manager_tool.py:_pinned_guard()` 在 `skill_manage` 写入路径上拦截 pinned skill 修改
-- 使用 aux client，**永不污染主 session 的 prompt cache**
+- **Never touches** bundled or hub-installed skills (`.bundled_manifest` + `.hub/lock.json` dual filter).
+- **Never automatically deletes** — only archives; can be restored via `hermes curator restore <skill>`.
+- **Pinned skills skip all automatic transitions**: `tools/skill_manager_tool.py:_pinned_guard()` intercepts modifications to pinned skills on the `skill_manage` write path.
+- Uses an auxiliary client, **never pollutes the main session's prompt cache**.
 
-### 触发逻辑
+### Trigger Logic
 
-默认开启，**inactivity-triggered**（无 cron 守护进程）：CLI 启动 + gateway 启动时检查，满足两条件才跑：
-1. 上次运行 > `interval_hours`（默认 `24 * 7 = 168`，即 7 天，`agent/curator.py:39`）
-2. agent 已闲置 > `min_idle_hours`（默认 `2`，`agent/curator.py:40`）
+Enabled by default, **inactivity-triggered** (no cron daemon): Checks on CLI startup + gateway startup, runs only if two conditions are met:
+1. Last run > `interval_hours` (default `24 * 7 = 168`, i.e., 7 days, `agent/curator.py:39`).
+2. Agent has been idle for > `min_idle_hours` (default `2`, `agent/curator.py:40`).
 
-Gateway 模式下也 hook 进 cron-ticker 线程定期检查。
+In Gateway mode, it also hooks into a cron-ticker thread for periodic checks.
 
-### 状态机
+### State Machine
 
 ```
-active ──不用 N 天──> stale ──继续不用──> archived
+active ──unused for N days──> stale ──continues unused──> archived
    ↑                                         │
-   └──────── 重新使用 ────────────────────────┘
+   └──────── re-used ────────────────────────┘
 ```
 
-纯函数式（`agent/curator.py` 内的 state-machine 转换），无 LLM 调用。Forked AIAgent 仅在需要**整合重叠 + 修补漂移**时才介入。
+Purely functional (state-machine transitions within `agent/curator.py`), no LLM calls. A Forked AIAgent intervenes only when **integrating overlaps + patching drift** is needed.
 
-### sidecar telemetry
+### Sidecar Telemetry
 
-`tools/skill_usage.py` 给每个 skill 维护 `.usage.json` sidecar 文件：
-- 原子写入 + provenance filter
-- 记录使用次数和最近使用时间，是状态机的输入信号
+`tools/skill_usage.py` maintains a `.usage.json` sidecar file for each skill:
+- Atomic writes + provenance filter.
+- Records usage count and last used timestamp, serving as input signals for the state machine.
 
 ### CLI
 
 ```bash
-hermes curator status        # 当前状态、待处理 skill
-hermes curator run           # 立即跑一轮
-hermes curator pause/resume  # 暂停/恢复
-hermes curator pin <skill>   # 钉住某个 skill（跳过自动转换）
+hermes curator status        # Current status, pending skills
+hermes curator run           # Run a cycle immediately
+hermes curator pause/resume  # Pause/resume
+hermes curator pin <skill>   # Pin a skill (skips automatic transitions)
 hermes curator unpin <skill>
-hermes curator restore <skill>  # 从归档恢复
+hermes curator restore <skill>  # Restore from archive
 ```
 
-`/curator` 斜杠命令暴露相同子命令。
+The `/curator` slash command exposes the same subcommands.
 
-## /reload-skills 和 /reload-mcp（v2026.4.23+）
+## /reload-skills and /reload-mcp (v2026.4.23+)
 
-**`/reload-skills`**：重新扫描 `~/.hermes/skills/` 发现新装/卸载的 skill，无需重启进程。**用户发起的 rescan**——不重置 prompt cache（skills 是按需通过 `/skill-name`、`skills_list`、`skill_view` 调用，不需要常驻系统提示）。重扫后通过 next-turn note 通知 agent，每个新增/移除的 skill 附带 60 字符描述。
+**`/reload-skills`**: Rescans `~/.hermes/skills/` to discover newly installed/uninstalled skills without requiring a process restart. This is a **user-initiated rescan** — it does not reset the prompt cache (skills are called on-demand via `/skill-name`, `skills_list`, `skill_view`, and do not need to be resident in the system prompt). After the rescan, the agent is notified via a next-turn note, with each added/removed skill accompanied by a 60-character description.
 
-> 说明：原 PR 包含一个 `skills_reload` agent 工具，但在后续 refactor（`dd2d1ba5e`）中被显式删除——agent 已经能通过 `skill_view` / `skills_list` 看到磁盘上新装的 skill，不需要额外 schema surface。
+> Note: The original PR included a `skills_reload` agent tool, but it was explicitly removed in a subsequent refactor (`dd2d1ba5e`) — the agent can already see newly installed skills on disk via `skill_view` / `skills_list`, so no additional schema surface is needed.
 
-**`/reload-mcp` 加确认提示**：MCP 重载会失效 prompt cache，gateway 现在弹出确认对话框（包含"未来不再询问"的 opt-out 选项），避免误操作清掉昂贵的缓存。
+**`/reload-mcp` with confirmation prompt**: MCP reload invalidates the prompt cache. The gateway now pops up a confirmation dialog (including an "don't ask again" opt-out option) to prevent accidental clearing of the expensive cache.
 
-## 拒绝写 pinned skills（v2026.4.23+）
+## Refusal to Write Pinned Skills (v2026.4.23+)
 
-`tools/skill_manager_tool.py:134` 新增 `_pinned_guard(name)`，在 `skill_manage` 的 create/update/archive/delete 路径上拦截 pinned skill 修改：
+`tools/skill_manager_tool.py:134` adds `_pinned_guard(name)` to intercept modifications to pinned skills on the `skill_manage` create/update/archive/delete paths:
 
 ```python
 if rec.get("pinned"):
     return f"Skill '{name}' is pinned and cannot be modified by skill_manage..."
 ```
 
-这是 Curator 不变量的延伸——pinned 状态对 agent 也是禁区，只能通过 `hermes curator unpin` 显式解锁。
+This is an extension of the Curator's invariants — the pinned status is also a no-go zone for the agent, and can only be explicitly unpinned via `hermes curator unpin`.
 
-## 相关页面
+## Related Pages
 
-- [[prompt-builder-architecture]] — 技能索引构建与条件激活
-- [[skills-and-memory-interaction]] — 技能与记忆的交互设计
-- [[security-defense-system]] — 技能安全扫描与信任级别策略
+- [[prompt-builder-architecture]] — Skill Index Construction and Conditional Activation
+- [[skills-and-memory-interaction]] — Interaction Design for Skills and Memory
+- [[security-defense-system]] — Skill Security Scanning and Trust Level Policies
 
-## 相关文件
+## Related Files
 
-- `tools/skills_tool.py` — 技能工具实现（1378 行）
-- `agent/prompt_builder.py` — Prompt 构建与技能索引
-- `agent/skill_utils.py` — 技能解析工具函数
-- `agent/skill_commands.py` — 技能斜杠命令
-- `tools/skills_sync.py` — 技能同步机制
-- `tools/skills_hub.py` — 技能中心（搜索/安装）
-- `tools/skill_manager_tool.py` — 技能管理工具
+- `tools/skills_tool.py` — Skill tool implementation (1378 lines)
+- `agent/prompt_builder.py` — Prompt Construction and Skill Indexing
+- `agent/skill_utils.py` — Skill Parsing Utility Functions
+- `agent/skill_commands.py` — Skill Slash Commands
+- `tools/skills_sync.py` — Skill Synchronization Mechanism
+- `tools/skills_hub.py` — Skill Hub (Search/Install)
+- `tools/skill_manager_tool.py` — Skill Management Tool

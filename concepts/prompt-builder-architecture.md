@@ -1,5 +1,5 @@
 ---
-title: Prompt Builder 系统提示构建架构
+title: Prompt Builder System Prompt Construction Architecture
 created: 2026-04-08
 updated: 2026-04-08
 type: concept
@@ -7,43 +7,43 @@ tags: [architecture, module, component, agent, prompt-builder]
 sources: [agent/prompt_builder.py]
 ---
 
-# Prompt Builder — 系统提示构建架构
+# Prompt Builder — System Prompt Construction Architecture
 
-## 概述
+## Overview
 
-Prompt Builder 位于 `agent/prompt_builder.py`（44KB/959行），负责**组装系统提示**——身份定义、平台提示、技能索引、上下文文件。所有函数无状态，由 `AIAgent._build_system_prompt()` 调用拼接各模块。
+The Prompt Builder, located at `agent/prompt_builder.py` (44KB/959 lines), is responsible for **assembling the system prompt**—agent identity definition, platform hints, skills index, and context files. All its functions are stateless and are invoked by `AIAgent._build_system_prompt()` to concatenate various modules.
 
-核心理念：**系统提示是模块化拼接的，每个组件可独立测试和替换。**
+Core Principle: **The system prompt is assembled modularly, with each component being independently testable and replaceable.**
 
-## 架构原理
+## Architectural Principles
 
-### 提示组件层次（实测结构）
+### Prompt Component Hierarchy (Verified Structure)
 
-`_build_system_prompt()` 按固定顺序拼接 `prompt_parts` 数组，最终 `"\n\n".join(prompt_parts)` 返回完整 system prompt。基于实际 API 请求抓包（约 36K chars / 10K tokens）验证的真实结构：
+`_build_system_prompt()` concatenates the `prompt_parts` array in a fixed order, finally returning the complete system prompt via `"\n\n".join(prompt_parts)`. The actual structure, verified through API request captures (approx. 36K chars / 10K tokens), is as follows:
 
 ```
-系统提示 =
-  ① Agent 身份 — SOUL.md（~/.hermes/SOUL.md，存在则用，否则 DEFAULT_AGENT_IDENTITY）
-  ② 工具使用强制（TOOL_USE_ENFORCEMENT_GUIDANCE，按模型族过滤）
-  ③ 模型特定执行指导（OpenAI/Google 等专用，按模型族过滤）
-  ④ 用户/Gateway 系统消息（若 run_conversation 传入 system_message）
-  ⑤ Memory 指导（硬编码提示，告诉模型如何用 memory 工具）
-  ⑥ MEMORY 快照 — ~/.hermes/memories/MEMORY.md（冻结，整会话不变）
-  ⑦ USER PROFILE 快照 — ~/.hermes/memories/USER.md（冻结，整会话不变）
-  ⑧ 外部 Memory Provider 块（mem0/honcho/holographic 等，若启用）
-  ⑨ Skills 索引（build_skills_system_prompt，扫描 ~/.hermes/skills/）
-  ⑩ 项目上下文文件（.hermes.md → AGENTS.md → CLAUDE.md → .cursorrules，first match wins）
-  ⑪ 会话元数据（时间戳、Model、Provider、Session ID）
-  ⑫ 平台提示（PLATFORM_HINTS，Telegram/Discord/CLI 等）
-  ⑬ 会话上下文（Gateway 注入：来源、Home Channel、投递选项）
+System Prompt =
+  ① Agent Identity — SOUL.md (~/.hermes/SOUL.md; if present, used; otherwise, DEFAULT_AGENT_IDENTITY)
+  ② Tool Usage Enforcement Guidance (filtered by model family)
+  ③ Model-Specific Execution Guidance (e.g., OpenAI/Google specific, filtered by model family)
+  ④ User/Gateway System Message (if a system_message is passed to run_conversation)
+  ⑤ Memory Guidance (hardcoded prompt instructing the model on memory tool usage)
+  ⑥ MEMORY Snapshot — ~/.hermes/memories/MEMORY.md (frozen, unchanged throughout the conversation)
+  ⑦ USER PROFILE Snapshot — ~/.hermes/memories/USER.md (frozen, unchanged throughout the conversation)
+  ⑧ External Memory Provider Block (e.g., mem0/honcho/holographic, if enabled)
+  ⑨ Skills Index (build_skills_system_prompt, scans ~/.hermes/skills/)
+  ⑩ Project Context Files (.hermes.md → AGENTS.md → CLAUDE.md → .cursorrules, first match wins)
+  ⑪ Conversation Metadata (timestamp, Model, Provider, Session ID)
+  ⑫ Platform Hints (PLATFORM_HINTS, e.g., Telegram/Discord/CLI)
+  ⑬ Conversation Context (Gateway injection: source, Home Channel, delivery options)
 ```
 
-**关键点**：
-- **SOUL.md 独立加载**，不参与"项目上下文文件"的 first-match-wins 竞争
-- **记忆快照使用冻结模式**——system prompt 在会话内只构建一次并缓存（`self._cached_system_prompt`），仅在上下文压缩后才重建，保护 prefix cache
-- **整个 system prompt 就是一条 message**（`role: "system"`），不是多个 message 拼接
+**Key Points**:
+- **SOUL.md is loaded independently** and does not participate in the "project context files" first-match-wins competition.
+- **Memory snapshots use a frozen mode**—the system prompt is constructed only once per session and cached (`self._cached_system_prompt`), being rebuilt only after context compression to protect the prefix cache.
+- **The entire system prompt is a single message** (`role: "system"`), not a concatenation of multiple messages.
 
-### 上下文文件注入防护
+### Context File Injection Protection
 
 ```python
 _CONTEXT_THREAT_PATTERNS = [
@@ -57,60 +57,60 @@ _CONTEXT_THREAT_PATTERNS = [
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',  # 零宽字符
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',  # 双向文本控制
+    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',  # Zero-width characters
+    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',  # Bidirectional text control characters
 }
 ```
 
-**双重防护**：
-1. **威胁模式检测**：10 种常见注入模式（忽略指令、隐藏行为、执行注入、密钥外泄等）
-2. **不可见 Unicode 检测**：10 种零宽字符和双向文本控制字符（5 种零宽 + 5 种双向控制，可能用于视觉欺骗）
+**Dual Protection**:
+1.  **Threat Pattern Detection**: 10 common injection patterns (e.g., ignoring instructions, hiding behavior, prompt injection, key exfiltration).
+2.  **Invisible Unicode Detection**: 10 zero-width and bidirectional text control characters (5 zero-width + 5 bidirectional control) which might be used for visual deception.
 
-检测到威胁时：替换为 `[BLOCKED: filename contained potential prompt injection]`
+When a threat is detected: the content is replaced with `[BLOCKED: filename contained potential prompt injection]`.
 
-## 核心组件
+## Core Components
 
-### 1. 上下文文件发现
+### 1. Context File Discovery
 
-**两条独立加载路径**：
+**Two independent loading paths**:
 
 ```python
-# 路径 A: SOUL.md — Agent 身份，固定路径，始终加载
+# Path A: SOUL.md — Agent Identity, fixed path, always loaded
 load_soul_md()  → ~/.hermes/SOUL.md  (HERMES_HOME)
 
-# 路径 B: 项目上下文文件 — 互斥，first match wins
+# Path B: Project Context Files — Mutually exclusive, first match wins
 project_context = (
-    _load_hermes_md(cwd_path)    # .hermes.md / HERMES.md（向上遍历到 git root）
-    or _load_agents_md(cwd_path) # AGENTS.md（仅 cwd）
-    or _load_claude_md(cwd_path) # CLAUDE.md（仅 cwd）
-    or _load_cursorrules(cwd_path) # .cursorrules / .cursor/rules/*.mdc（仅 cwd）
+    _load_hermes_md(cwd_path)    # .hermes.md / HERMES.md (traverses upwards to git root)
+    or _load_agents_md(cwd_path) # AGENTS.md (cwd only)
+    or _load_claude_md(cwd_path) # CLAUDE.md (cwd only)
+    or _load_cursorrules(cwd_path) # .cursorrules / .cursor/rules/*.mdc (cwd only)
 )
 ```
 
-| 文件 | 位置 | 搜索范围 | 角色 |
+| File | Location | Search Scope | Role |
 |------|------|---------|------|
-| **SOUL.md** | `~/.hermes/SOUL.md` | HERMES_HOME（全局唯一） | Agent 身份/人格，独立加载 |
-| **.hermes.md** | cwd 向上到 git root | 遍历查找 | 项目级配置，优先级 1 |
-| **AGENTS.md** | 仅 cwd | 不递归 | 代码库开发指南，优先级 2 |
-| **CLAUDE.md** | 仅 cwd | 不递归 | 兼容 Anthropic 格式，优先级 3 |
-| **.cursorrules** | 仅 cwd（含 `.cursor/rules/*.mdc`） | 不递归 | 兼容 Cursor 格式，优先级 4 |
+| **SOUL.md** | `~/.hermes/SOUL.md` | HERMES_HOME (globally unique) | Agent Identity/Persona, loaded independently |
+| **.hermes.md** | cwd upwards to git root | Recursive search | Project-level configuration, Priority 1 |
+| **AGENTS.md** | cwd only | Non-recursive | Codebase development guidelines, Priority 2 |
+| **CLAUDE.md** | cwd only | Non-recursive | Anthropic format compatibility, Priority 3 |
+| **.cursorrules** | cwd only (including `.cursor/rules/*.mdc`) | Non-recursive | Cursor format compatibility, Priority 4 |
 
-**常见误区**：
-- SOUL.md **不参与**项目上下文的优先级竞争——它是独立的身份槽
-- 项目上下文文件是**互斥加载**（first match wins），不是"都加载"
-- 如果当前 cwd 同时有 `.hermes.md` 和 `CLAUDE.md`，只有 `.hermes.md` 会被加载
+**Common Misconceptions**:
+- SOUL.md **does not participate** in the project context's priority competition—it is a separate identity slot.
+- Project context files are loaded **mutually exclusively** (first match wins), not "all loaded."
+- If the current working directory contains both `.hermes.md` and `CLAUDE.md`, only `.hermes.md` will be loaded.
 
-**跳过机制**：
-- `AIAgent(skip_context_files=True)` — 子 Agent 常用，避免继承父 Agent 的项目上下文
-- 在不同目录下启动 Hermes（例如设 `TERMINAL_CWD=~`）— 天然跳过项目文件
-- SOUL.md 也跳过：`build_context_files_prompt(skip_soul=True)` 当 SOUL.md 已作为身份槽加载时避免重复注入
+**Skip Mechanism**:
+- `AIAgent(skip_context_files=True)` — Commonly used by sub-agents to avoid inheriting parent agent's project context.
+- Launching Hermes in a different directory (e.g., `TERMINAL_CWD=~`) — Naturally skips project files.
+- Skipping SOUL.md: `build_context_files_prompt(skip_soul=True)` avoids duplicate injection if SOUL.md has already been loaded as an identity slot.
 
-**内容保护**：
-- 每个文件内容上限 20,000 字符，超出自动头尾截断（`[...truncated...]`）
-- 自动剥离 YAML frontmatter（结构化配置单独处理）
-- 扫描威胁模式（见下节）
+**Content Protection**:
+- Each file content has a limit of 20,000 characters; exceeding this automatically truncates the content (indicated by `[...truncated...]`).
+- YAML frontmatter is automatically stripped (structured configuration is handled separately).
+- Scans for threat patterns (see next section).
 
-### 2. 技能索引与缓存
+### 2. Skills Indexing and Caching
 
 ```python
 _SKILLS_PROMPT_CACHE_MAX = 8
@@ -122,39 +122,39 @@ def build_skills_system_prompt(
     disabled_skills: set,
 ) -> str:
     """
-    1. 扫描 skills 目录
-    2. 解析每个 SKILL.md 的 frontmatter
-    3. 检查平台兼容性 + 条件激活规则
-    4. 构建技能清单提示
-    5. 缓存结果（基于 mtime/size manifest）
+    1. Scans the skills directory
+    2. Parses the frontmatter of each SKILL.md
+    3. Checks platform compatibility + conditional activation rules
+    4. Constructs the skill manifest prompt
+    5. Caches the result (based on mtime/size manifest)
     """
 ```
 
-### 3. 技能快照持久化
+### 3. Skill Snapshot Persistence
 
 ```python
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
-    """从磁盘加载快照，manifest 匹配则复用"""
+    """Loads snapshot from disk, reuses if manifest matches"""
 
 def _write_skills_snapshot(skills_dir, manifest, skill_entries, category_descriptions):
-    """原子写入快照（atomic_json_write）"""
+    """Atomically writes snapshot (atomic_json_write)"""
 ```
 
-**冷启动优化**：技能文件未变化时，直接从磁盘快照加载，无需重新解析所有 SKILL.md。
+**Cold Start Optimization**: If skill files are unchanged, the snapshot is loaded directly from disk, eliminating the need to re-parse all SKILL.md files.
 
-### 4. 技能条件激活
+### 4. Skill Conditional Activation
 
 ```python
 def _skill_should_show(conditions, available_tools, available_toolsets):
     """
-    fallback_for_toolsets: 主工具可用时隐藏（备用技能）
-    fallback_for_tools: 主工具可用时隐藏
-    requires_toolsets: 依赖的工具集不存在时隐藏
-    requires_tools: 依赖的工具不存在时隐藏
+    fallback_for_toolsets: Hides when primary toolset is available (fallback skill)
+    fallback_for_tools: Hides when primary tool is available
+    requires_toolsets: Hides when required toolset is not present
+    requires_tools: Hides when required tool is not present
     """
 ```
 
-### 5. 平台提示
+### 5. Platform Hints
 
 ```python
 PLATFORM_HINTS = {
@@ -170,9 +170,9 @@ PLATFORM_HINTS = {
 }
 ```
 
-### 6. 模型特定执行指导
+### 6. Model-Specific Execution Guidance
 
-#### OpenAI/GPT Codex 系列
+#### OpenAI/GPT Codex Series
 
 ```python
 OPENAI_MODEL_EXECUTION_GUIDANCE = """
@@ -203,7 +203,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = """
 """
 ```
 
-#### Gemini/Gemma 系列
+#### Gemini/Gemma Series
 
 ```python
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = """
@@ -217,44 +217,44 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = """
 """
 ```
 
-### 7. Developer Role 切换
+### 7. Developer Role Switching
 
 ```python
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
-# OpenAI 新模型对 'developer' role 的指令遵循权重更高
-# 在 API 边界自动切换，内部表示保持 "system" 一致
+# New OpenAI models give higher weight to instructions within the 'developer' role.
+# This role is automatically switched at the API boundary, while internally the representation remains consistent as "system".
 ```
 
-## 设计优越性
+## Design Advantages
 
-### 模块化优势
+### Modularity Benefits
 
-| 维度 | 单块提示 | 模块化 Prompt Builder |
+| Dimension | Monolithic Prompt | Modular Prompt Builder |
 |---|---|---|
-| 测试 | 难以单元测试 | 每个组件独立测试 |
-| 定制 | 需要全量替换 | 按平台/模型/技能动态组装 |
-| 安全 | 注入难以检测 | 上下文文件独立扫描 |
-| 维护 | 修改一处影响全局 | 各组件独立演化 |
-| 缓存 | 无法缓存 | 技能索引可缓存 |
+| Testing | Difficult to unit test | Each component is independently testable |
+| Customization | Requires full replacement | Dynamically assembled by platform/model/skill |
+| Security | Injection difficult to detect | Context files scanned independently |
+| Maintenance | Changes in one place affect everything | Each component evolves independently |
+| Caching | Cannot cache | Skills index can be cached |
 
-### 安全防护的优越性
+### Superior Security Protection
 
-传统的上下文文件注入没有防护。Prompt Builder 通过**多层检测**确保注入的内容不会改变 Agent 行为：
-1. 威胁模式正则匹配
-2. 不可见 Unicode 字符检测
-3. 检测到威胁时替换为 BLOCKED 标记而非直接丢弃（让 Agent 知道有问题）
+Traditional context file injection lacks protection. The Prompt Builder ensures that injected content does not alter agent behavior through **multi-layered detection**:
+1.  Threat pattern regular expression matching
+2.  Invisible Unicode character detection
+3.  When a threat is detected, it's replaced with a BLOCKED marker rather than discarded (informing the agent there was an issue).
 
-## 配置与操作
+## Configuration and Operations
 
-### 自定义 Agent 身份
+### Customizing Agent Identity
 
-创建 `~/hermes-agent/SOUL.md` 定义个性化身份。
+Create `~/hermes-agent/SOUL.md` to define a personalized identity.
 
-### 项目级配置
+### Project-level Configuration
 
-在项目根创建 `.hermes.md`，内容会被注入到系统提示中。
+Create a `.hermes.md` in the project root; its content will be injected into the system prompt.
 
-### 禁用特定技能
+### Disabling Specific Skills
 
 ```yaml
 # config.yaml
@@ -262,9 +262,9 @@ skills:
   disabled: ["some-skill", "another-skill"]
 ```
 
-## 与其他系统的关系
+## Relationship to Other Systems
 
-- [[tool-registry-architecture]] — 技能条件激活依赖可用工具集
-- [[context-compressor-architecture]] — 压缩后的消息列表传给 prompt builder 重建提示
-- [[memory-system-architecture]] — memory 指导是提示的一部分
-- [[agent-loop-and-prompt-assembly]] — prompt builder 被 agent 循环调用
+- [[tool-registry-architecture]] — Skill conditional activation depends on available toolsets
+- [[context-compressor-architecture]] — Compressed message list is passed to the prompt builder to reconstruct the prompt
+- [[memory-system-architecture]] — Memory guidance is part of the prompt
+- [[agent-loop-and-prompt-assembly]] — The prompt builder is called by the agent loop

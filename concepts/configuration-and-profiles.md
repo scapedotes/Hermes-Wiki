@@ -1,5 +1,5 @@
 ---
-title: 配置管理与多 Profile 架构
+title: Configuration Management and Multi-Profile Architecture
 created: 2026-04-07
 updated: 2026-04-09
 type: concept
@@ -7,34 +7,34 @@ tags: [architecture, configuration, profile, isolation]
 sources: [hermes_cli/profiles.py, hermes_cli/config.py, hermes_cli/main.py, hermes_cli/gateway.py, hermes_constants.py, plugins/memory/honcho/cli.py, agent/prompt_builder.py]
 ---
 
-# 配置管理与多 Profile 架构
+# Configuration Management and Multi-Profile Architecture
 
-## 概述
+## Overview
 
-Hermes 通过**分层配置 + Profile 隔离**管理复杂的多维配置。Profile 是核心设计——每个 Profile 是一个完全独立的 `HERMES_HOME` 目录，拥有自己的配置、记忆、会话、技能、网关和定时任务。
+Hermes manages complex multi-dimensional configurations through **layered configuration + Profile isolation**. The Profile is a core design concept – each Profile is a completely independent `HERMES_HOME` directory, with its own configurations, memory, sessions, skills, gateways, and scheduled tasks.
 
-## 配置层次
+## Configuration Hierarchy
 
 ```text
-优先级从低到高：
-  1. 硬编码默认值         (hermes_cli/config.py DEFAULT_CONFIG)
-  2. 用户配置文件         (~/.hermes/config.yaml)
-  3. 环境变量             (.env 文件 + shell 环境变量)
-  4. CLI 参数             (--model, --provider 等命令行参数)
-  5. Profile 覆盖         (HERMES_HOME 环境变量指向不同目录)
+Priority from low to high:
+  1. Hardcoded defaults         (hermes_cli/config.py DEFAULT_CONFIG)
+  2. User configuration file    (~/.hermes/config.yaml)
+  3. Environment variables      (.env file + shell environment variables)
+  4. CLI arguments              (--model, --provider, etc. command-line arguments)
+  5. Profile override           (HERMES_HOME environment variable pointing to a different directory)
 ```
 
-## 配置文件结构
+## Configuration File Structure
 
-Hermes 有两套配置文件，职责不同：
+Hermes has two sets of configuration files, each with different responsibilities:
 
-| 文件 | 存什么 | 生效方式 |
-|------|--------|---------|
-| `.env` | API Keys、敏感凭证 | 环境变量注入 |
-| `config.yaml` | 运行时行为配置 | `load_config()` 读取 |
+| File         | Stores What            | How It Takes Effect         |
+|--------------|------------------------|-----------------------------|
+| `.env`       | API Keys, sensitive credentials | Environment variable injection |
+| `config.yaml`| Runtime behavior configuration | Read by `load_config()`     |
 
 ```yaml
-# ~/.hermes/config.yaml 核心配置项
+# ~/.hermes/config.yaml Core Configuration Items
 model:
   default: "anthropic/claude-opus-4.6"
   provider: "auto"
@@ -59,40 +59,40 @@ memory:
   flush_min_turns: 6
 ```
 
-## 多 Profile 架构
+## Multi-Profile Architecture
 
-### 核心原理
+### Core Principle
 
-所有 Hermes 模块通过 `get_hermes_home()` 解析路径：
+All Hermes modules resolve paths via `get_hermes_home()`:
 
 ```python
-# hermes_constants.py — 全局唯一的路径来源
+# hermes_constants.py — Globally unique path source
 def get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 ```
 
-切换 Profile = 改变 `HERMES_HOME` 环境变量。代码库中 119+ 个文件调用 `get_hermes_home()`，Profile 切换时所有路径自动重定向，无需任何模块感知 Profile 的存在。
+Switching a Profile = Changing the `HERMES_HOME` environment variable. With over 119 files in the codebase calling `get_hermes_home()`, all paths are automatically redirected when a Profile is switched, without any module needing to be aware of the Profile's existence.
 
-### 目录结构
+### Directory Structure
 
 ```text
-~/.hermes/                              ← "default" Profile（向后兼容）
-  active_profile                        ← 粘性默认指针（存储 Profile 名称）
-  config.yaml, .env, SOUL.md            ← default Profile 的配置
-  memories/, sessions/, skills/          ← default Profile 的数据
-  state.db                              ← default Profile 的数据库
-  profiles/                             ← 命名 Profile 根目录
-    coder/                              ← 命名 Profile（激活时成为 HERMES_HOME）
-      config.yaml                       ← 独立的模型/终端/压缩配置
-      .env                              ← 独立的 API Keys
-      SOUL.md                           ← 独立的 Agent 身份定义
-      memories/MEMORY.md, USER.md       ← 独立的持久记忆
-      sessions/                         ← 独立的会话日志
-      skills/                           ← 独立的技能集
-      state.db                          ← 独立的 SQLite 数据库
-      honcho.json                       ← 独立的 Honcho 配置
+~/.hermes/                              ← "default" Profile (for backward compatibility)
+  active_profile                        ← Sticky default pointer (stores Profile name)
+  config.yaml, .env, SOUL.md            ← default Profile's configuration
+  memories/, sessions/, skills/         ← default Profile's data
+  state.db                              ← default Profile's database
+  profiles/                             ← Named Profile root directory
+    coder/                              ← Named Profile (becomes HERMES_HOME when active)
+      config.yaml                       ← Independent model/terminal/compression configuration
+      .env                              ← Independent API Keys
+      SOUL.md                           ← Independent Agent identity definition
+      memories/MEMORY.md, USER.md       ← Independent persistent memory
+      sessions/                         ← Independent session logs
+      skills/                           ← Independent skill set
+      state.db                          ← Independent SQLite database
+      honcho.json                       ← Independent Honcho configuration
       logs/, cron/, skins/, plans/, workspace/
-    ops/                                ← 另一个 Profile
+    ops/                                ← Another Profile
       ...
 
 ~/.local/bin/
@@ -100,192 +100,192 @@ def get_hermes_home() -> Path:
   ops     → #!/bin/sh\nexec hermes -p ops "$@"
 ```
 
-**每个 Profile 内部结构完全相同**，包含以下目录：`memories`、`sessions`、`skills`、`skins`、`logs`、`plans`、`workspace`、`cron`。
+**The internal structure of each Profile is identical**, containing the following directories: `memories`, `sessions`, `skills`, `skins`, `logs`, `plans`, `workspace`, `cron`.
 
-### Profile 激活流程
+### Profile Activation Flow
 
 ```text
 hermes -p coder chat
        │
        ▼
-_apply_profile_override()          ← main.py 模块级，在任何 import 之前执行
+_apply_profile_override()          ← module-level in main.py, executed before any imports
        │
-       ├─ 解析 sys.argv 找 -p/--profile 参数
-       ├─ 未找到 → 读 ~/.hermes/active_profile（粘性默认）
+       ├─ Parse sys.argv for -p/--profile arguments
+       ├─ Not found → Read ~/.hermes/active_profile (sticky default)
        │
        ▼
 os.environ["HERMES_HOME"] = "~/.hermes/profiles/coder"
        │
        ▼
-get_hermes_home() → 返回 Profile 目录
+get_hermes_home() → Returns Profile directory
        │
        ▼
-所有模块自动作用于 coder Profile
-（config、memory、skills、gateway、session 全部隔离）
+All modules automatically operate on the coder Profile
+(config, memory, skills, gateway, session are all isolated)
 ```
 
-关键：`_apply_profile_override()` 在**模块级**执行，先于所有 `import`——因为很多模块在 import 时就缓存了 `HERMES_HOME`。
+Key point: `_apply_profile_override()` executes at the **module level**, prior to all `import` statements—because many modules cache `HERMES_HOME` during import.
 
-### CLI 命令
+### CLI Commands
 
 ```bash
-# 创建
-hermes profile create coder              # 空白 Profile + 播种内置技能
-hermes profile create coder --clone      # 克隆 config.yaml + .env + SOUL.md + 记忆
-hermes profile create coder --clone-all  # 完整复制所有状态（去除运行时文件）
-hermes profile create coder --no-alias   # 不生成 wrapper 快捷命令
+# Create
+hermes profile create coder              # Blank Profile + seed built-in skills
+hermes profile create coder --clone      # Clones config.yaml + .env + SOUL.md + memory
+hermes profile create coder --clone-all  # Full copy of all states (excluding runtime files)
+hermes profile create coder --no-alias   # Does not generate wrapper shortcut commands
 
-# 使用
-hermes -p coder chat                     # 指定 Profile 启动
-coder chat                               # 通过 wrapper 快捷启动
-hermes profile use coder                 # 设为粘性默认
+# Use
+hermes -p coder chat                     # Start with a specified Profile
+coder chat                               # Launch via wrapper shortcut
+hermes profile use coder                 # Set as sticky default
 
-# 管理
-hermes profile list                      # 查看所有 Profile 状态
-hermes profile show coder                # 详细信息（模型/网关/技能数）
-hermes profile rename coder developer    # 重命名
-hermes profile alias coder --name dev    # 自定义别名
-hermes profile export coder              # 导出为 tar.gz
-hermes profile import archive.tar.gz     # 导入
-hermes profile delete coder              # 删除（需确认）
+# Manage
+hermes profile list                      # View all Profile statuses
+hermes profile show coder                # Detailed information (model/gateway/skill count)
+hermes profile rename coder developer    # Rename
+hermes profile alias coder --name dev    # Custom alias
+hermes profile export coder              # Export as tar.gz
+hermes profile import archive.tar.gz     # Import
+hermes profile delete coder              # Delete (requires confirmation)
 ```
 
-### Profile 命名规则
+### Profile Naming Rules
 
 ```text
-正则：^[a-z0-9][a-z0-9_-]{0,63}$
+Regex: ^[a-z0-9][a-z0-9_-]{0,63}$
   ✅ coder, ops-team, dev2, my_profile
-  ❌ Coder（大写）, -ops（前缀连字符）, hermes（保留名）, chat（子命令冲突）
+  ❌ Coder (uppercase), -ops (prefix hyphen), hermes (reserved name), chat (subcommand conflict)
 ```
 
-保留名：`hermes`、`default`、`test`、`tmp`、`root`、`sudo` + 所有 hermes 子命令名。
+Reserved names: `hermes`, `default`, `test`, `tmp`, `root`, `sudo` + all Hermes subcommand names.
 
-### 克隆行为
+### Cloning Behavior
 
-| 模式 | 复制内容 |
-|------|---------|
-| `--clone` | config.yaml、.env、SOUL.md、MEMORY.md、USER.md |
-| `--clone-all` | 完整 copytree（去除 gateway.pid 等运行时文件） |
-| 无参数 | 只创建目录结构 + 播种内置技能 |
+| Mode          | Content Copied                                  |
+|---------------|-------------------------------------------------|
+| `--clone`     | config.yaml, .env, SOUL.md, MEMORY.md, USER.md  |
+| `--clone-all` | Full copytree (excluding runtime files like gateway.pid) |
+| No parameters | Only creates directory structure + seeds built-in skills |
 
-记忆文件（MEMORY.md / USER.md）在 `--clone` 时一并复制，源码注释："Memory files are part of the agent's curated identity — just as important as SOUL.md for continuity."
+Memory files (MEMORY.md / USER.md) are copied with `--clone`. Source code comment: "Memory files are part of the agent's curated identity — just as important as SOUL.md for continuity."
 
-### 导出/导入安全
+### Export/Import Security
 
-**导出时排除敏感文件：**
-- `.env`（API Keys）
-- `auth.json`（OAuth tokens）
-- `state.db`（可能含敏感对话）
-- 各种缓存（image_cache、audio_cache、checkpoints）
+**Exclude sensitive files during export:**
+- `.env` (API Keys)
+- `auth.json` (OAuth tokens)
+- `state.db` (may contain sensitive conversations)
+- Various caches (image_cache, audio_cache, checkpoints)
 
-**导入时安全检查：**
-- 拒绝路径遍历攻击（`../`）
-- 拒绝绝对路径（`/etc/passwd`）
-- 拒绝 Windows 驱动器号（`C:\`）
-- 拒绝符号链接
-- 只允许普通文件和目录
+**Security checks during import:**
+- Reject path traversal attacks (`../`)
+- Reject absolute paths (`/etc/passwd`)
+- Reject Windows drive letters (`C:\`)
+- Reject symbolic links
+- Only allows regular files and directories
 
-## Profile 与子系统的联动
+## Profile and Subsystem Interoperability
 
-### Gateway 隔离
+### Gateway Isolation
 
-每个 Profile 可以独立运行自己的 Gateway（Telegram/Slack 等）：
+Each Profile can run its own independent Gateway (Telegram/Slack, etc.):
 
 ```text
-default Profile  → hermes-gateway          (服务名)
-coder Profile    → hermes-gateway-coder    (服务名带后缀)
+default Profile  → hermes-gateway          (service name)
+coder Profile    → hermes-gateway-coder    (service name with suffix)
 ```
 
-- PID 文件作用于各自 HERMES_HOME，互不冲突
-- systemd/launchd 服务名自动带 Profile 后缀
-- 如果两个 Profile 使用同一个 Bot Token，第二个 Gateway 会被拦截并报错
+- PID files operate within their respective `HERMES_HOME`s, avoiding conflicts.
+- systemd/launchd service names automatically include the Profile suffix.
+- If two Profiles use the same Bot Token, the second Gateway will be blocked and error out.
 
-### Honcho 记忆隔离
+### Honcho Memory Isolation
 
-每个 Profile 在 Honcho 中有独立的 host block：
+Each Profile has an independent host block in Honcho:
 
 ```text
 default → hermes          (host key)
-coder   → hermes.coder    (host key 带后缀)
+coder   → hermes.coder    (host key with suffix)
 ```
 
-AI Peer 按 Profile 隔离（独立的用户建模），但 workspace 共享（所有 Profile 看到同一个用户的观察数据）。
+AI Peer is isolated by Profile (independent user modeling), but the workspace is shared (all Profiles see the same user observation data).
 
-创建新 Profile 时自动克隆 Honcho 配置；`hermes update` 时自动同步所有 Profile 的 Honcho host blocks。
+Honcho configuration is automatically cloned when creating a new Profile; `hermes update` automatically syncs Honcho host blocks for all Profiles.
 
-### SOUL.md 身份
+### SOUL.md Identity
 
-每个 Profile 有自己的 `SOUL.md`，定义 Agent 的身份和行为规范。`prompt_builder.py` 通过 `get_hermes_home() / "SOUL.md"` 加载，Profile 切换后自动指向对应文件。
+Each Profile has its own `SOUL.md`, defining the Agent's identity and behavioral norms. `prompt_builder.py` loads it via `get_hermes_home() / "SOUL.md"`, automatically pointing to the corresponding file after a Profile switch.
 
-### 技能同步
+### Skill Synchronization
 
-`hermes update` 会自动将内置技能同步到**所有** Profile：
+`hermes update` automatically syncs built-in skills to **all** Profiles:
 
 ```text
 hermes update
-  → 更新当前 Profile 技能
-  → 扫描所有其他 Profile
-  → 对每个 Profile 执行 seed_profile_skills()
-  → 用户自定义的技能不会被覆盖
+  → Updates current Profile skills
+  → Scans all other Profiles
+  → Executes seed_profile_skills() for each Profile
+  → User-defined skills will not be overwritten
 ```
 
-技能播种通过**子进程**执行（不是 in-process），因为 `sync_skills()` 在模块级缓存了 HERMES_HOME。
+Skill seeding is executed via **subprocess** (not in-process) because `sync_skills()` caches `HERMES_HOME` at the module level.
 
-### Banner 和 Prompt
+### Banner and Prompt
 
-- 启动 Banner 显示当前 Profile 名称（非 default 时）
-- CLI 输入提示符带 Profile 前缀：`coder >` 而不是 `>`
-- Gateway 支持 `/profile` 命令查看当前 Profile
+- Startup Banner displays the current Profile name (when not `default`).
+- CLI input prompt includes a Profile prefix: `coder >` instead of `>`.
+- Gateway supports the `/profile` command to view the current Profile.
 
-## 典型使用场景
+## Typical Use Cases
 
 ```bash
-# 场景：按职能隔离
-hermes profile create coder --clone       # 日常开发
-hermes profile create ops --clone         # 运维操作
-hermes profile create research --clone    # 研究调研
+# Scenario: Isolation by function
+hermes profile create coder --clone       # Daily development
+hermes profile create ops --clone         # Operations tasks
+hermes profile create research --clone    # Research and exploration
 
-# 分别配置不同的安全边界
+# Configure different security boundaries separately
 hermes -p coder config set terminal.backend local
 hermes -p ops config set terminal.backend docker
 hermes -p research config set terminal.backend ssh
 
-# 分别配置不同的模型
+# Configure different models separately
 hermes -p coder config set model.default "anthropic/claude-opus-4.6"
 hermes -p research config set model.default "google/gemini-2.5-pro"
 
-# 分别运行各自的 Gateway
+# Run their respective Gateways separately
 hermes -p coder telegram &
 hermes -p ops telegram &
 ```
 
-## 与 Multi-Agent 的关系
+## Relationship with Multi-Agent
 
-多 Profile 可以视为 Hermes 的**第二种多 Agent 方案**。会话内的 multi-agent（delegate_task）适合"一个任务内的并行分工"，多 Profile 适合"不同职能角色的长期隔离"。两者互补：
+Multi-Profile can be considered Hermes' **second multi-Agent solution**. In-session multi-agent (delegate_task) is suitable for "parallel division of labor within a single task", while Multi-Profile is suitable for "long-term isolation of different functional roles". Both are complementary:
 
-- delegate_task 子 agent **继承父 agent 的 terminal backend**，无法按任务切换隔离级别
-- 多 Profile 可以为每个角色**独立配置 backend**（coder 用 local，ops 用 docker）
-- 代价是多 Profile 之间没有自动协作，需要用户手动切换
+- A delegate_task sub-agent **inherits the parent agent's terminal backend**, making it unable to switch isolation levels per task.
+- Multi-Profile can **independently configure backends for each role** (coder uses local, ops uses docker).
+- The trade-off is that there is no automatic collaboration between Multi-Profiles, requiring manual switching by the user.
 
-详见 → [[multi-agent-architecture]]
+See also → [[multi-agent-architecture]]
 
-## 相关页面
+## Related Pages
 
-- [[multi-agent-architecture]] — 会话内多 Agent（delegate_task / MoA / Background Review）
-- [[terminal-backends]] — 终端后端选择（Profile 可为每个角色配置不同后端）
-- [[memory-system-architecture]] — 记忆系统（每个 Profile 独立的 MEMORY.md / USER.md）
-- [[skills-system-architecture]] — 技能系统（每个 Profile 独立的技能集）
-- [[credential-pool-and-isolation]] — 凭证隔离
-- [[hook-system-architecture]] — Hook 系统（Gateway Hooks 按 Profile 隔离）
+- [[multi-agent-architecture]] — In-session Multi-Agent (delegate_task / MoA / Background Review)
+- [[terminal-backends]] — Terminal Backend Selection (Profile can configure different backends for each role)
+- [[memory-system-architecture]] — Memory System (each Profile has independent MEMORY.md / USER.md)
+- [[skills-system-architecture]] — Skill System (each Profile has an independent skill set)
+- [[credential-pool-and-isolation]] — Credential Isolation
+- [[hook-system-architecture]] — Hook System (Gateway Hooks are isolated by Profile)
 
-## 关键源码
+## Key Source Files
 
-| 文件 | 职责 |
-|------|------|
-| `hermes_constants.py` | `get_hermes_home()` — 全局路径来源 |
-| `hermes_cli/profiles.py` | Profile CRUD、导出导入、别名管理 |
-| `hermes_cli/main.py` | `_apply_profile_override()` — 启动时 Profile 激活 |
-| `hermes_cli/config.py` | `load_config()` — 读取 Profile 作用域的 config.yaml |
-| `hermes_cli/gateway.py` | Gateway 服务名后缀、PID 隔离 |
-| `plugins/memory/honcho/cli.py` | Honcho host block 按 Profile 隔离 |
-| `agent/prompt_builder.py` | SOUL.md 按 Profile 加载 |
+| File                       | Responsibility                                  |
+|----------------------------|-------------------------------------------------|
+| `hermes_constants.py`      | `get_hermes_home()` — Global path source        |
+| `hermes_cli/profiles.py`   | Profile CRUD, export/import, alias management   |
+| `hermes_cli/main.py`       | `_apply_profile_override()` — Profile activation at startup |
+| `hermes_cli/config.py`     | `load_config()` — Reads Profile-scoped `config.yaml` |
+| `hermes_cli/gateway.py`    | Gateway service name suffix, PID isolation      |
+| `plugins/memory/honcho/cli.py` | Honcho host block isolation by Profile          |
+| `agent/prompt_builder.py`  | SOUL.md loaded by Profile                       |

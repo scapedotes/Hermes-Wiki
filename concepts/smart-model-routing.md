@@ -1,5 +1,5 @@
 ---
-title: Smart Model Routing 智能模型路由
+title: Smart Model Routing
 created: 2026-04-08
 updated: 2026-04-29
 type: concept
@@ -7,108 +7,108 @@ tags: [architecture, module, model-routing, performance, caching, anthropic]
 sources: [agent/model_metadata.py, agent/models_dev.py, hermes_cli/model_switch.py, hermes_cli/model_normalize.py]
 ---
 
-# Smart Model Routing — 智能模型路由
+# Smart Model Routing
 
-## 概述
+## Overview
 
-> **注意**：本页涵盖**多个模块**的协作，而非仅 `agent/smart_model_routing.py`。`smart_model_routing.py` 本身只是一个约 195 行的轻量启发式模块，负责 cheap/strong 消息路由（决定用便宜模型还是强模型处理当前消息）。本页讨论的更广泛的模型基础设施——元数据解析、上下文长度探测、模型切换管道——分布在下列四个核心模块中。
+> **Note**: This page covers the collaboration of **multiple modules**, not just `agent/smart_model_routing.py`. `smart_model_routing.py` itself is merely a lightweight heuristic module of approximately 195 lines, responsible for cheap/strong message routing (deciding whether to process the current message with a cheaper or stronger model). The broader model infrastructure discussed on this page—metadata parsing, context length probing, model switching pipeline—is distributed across the four core modules listed below.
 
-Smart Model Routing 是 Hermes Agent 的**模型元数据解析与上下文长度自动检测**系统，由四个核心模块组成：
+Smart Model Routing is the Hermes Agent's **model metadata parsing and automatic context length detection** system, comprising four core modules:
 
-| 模块 | 源码 | 职责 |
+| Module | Source | Responsibility |
 |---|---|---|
-| **model_metadata.py** | 36KB/941行 | 上下文长度检测、端点探测、token 估算 |
-| **models_dev.py** | 25KB/781行 | models.dev 4000+ 模型数据库集成 |
-| **model_switch.py** | 32KB/927行 | 模型切换管道（别名解析 → 凭证 → 元数据） |
-| **model_normalize.py** | 外部模块 | 各提供商模型名称规范化 |
+| **model_metadata.py** | 36KB/941 lines | Context length detection, endpoint probing, token estimation |
+| **models_dev.py** | 25KB/781 lines | models.dev 4000+ model database integration |
+| **model_switch.py** | 32KB/927 lines | Model switching pipeline (alias resolution → credentials → metadata) |
+| **model_normalize.py** | External module | Normalization of model names across providers |
 
-核心理念：**10 级上下文长度解析链 + models.dev 4000+ 模型数据库 + 本地服务器自动探测。**
+Core Concept: **10-level Context Length Resolution Chain + models.dev 4000+ Model Database + Local Server Auto-Probing.**
 
-## 架构原理
+## Architectural Principles
 
-### 上下文长度解析链（10 级）
+### Context Length Resolution Chain (10 Levels)
 
 ```python
 def get_model_context_length(model, base_url, api_key, config_context_length, provider):
     """
-    0. config 显式覆盖 → 用户知道最好
-    1. 持久化缓存（之前探测到的 model@base_url）
-    2. 活跃端点元数据（/models 端点，仅限自定义端点）
-    3. 本地服务器查询（Ollama/LM Studio/vLLM/llama.cpp）
-    4. Anthropic /v1/models API（仅 API Key，不含 OAuth）
-    5. models.dev 注册表（提供商感知，含 Nous 后缀匹配）
-    6. OpenRouter 实时 API 元数据
-    7. 硬编码默认值（模糊匹配，最长 key 优先）
-    8. 本地服务器最后尝试
-    9. 默认回退: 128K
+    0. config explicit override → user knows best
+    1. Persistent cache (previously probed model@base_url)
+    2. Active endpoint metadata (/models endpoint, custom endpoints only)
+    3. Local server query (Ollama/LM Studio/vLLM/llama.cpp)
+    4. Anthropic /v1/models API (API Key only, no OAuth)
+    5. models.dev registry (provider-aware, including Nous suffix matching)
+    6. OpenRouter real-time API metadata
+    7. Hardcoded defaults (fuzzy matching, longest key first)
+    8. Local server last attempt
+    9. Default fallback: 128K
     """
 ```
 
-**设计哲学**：从最精确到最宽松，每级失败才进入下一级。
+**Design Philosophy**: From most precise to least permissive, each level is attempted only if the previous one fails.
 
-### 本地服务器自动探测
+### Local Server Auto-Probing
 
 ```python
 def detect_local_server_type(base_url):
     """
-    探测顺序:
-    1. LM Studio → /api/v1/models (最特定)
-    2. Ollama → /api/tags (验证 response 包含 "models")
-    3. llama.cpp → /v1/props 或 /props (检查 default_generation_settings)
-    4. vLLM → /version (检查 "version" 字段)
+    Detection order:
+    1. LM Studio → /api/v1/models (most specific)
+    2. Ollama → /api/tags (verify response contains "models")
+    3. llama.cpp → /v1/props or /props (check default_generation_settings)
+    4. vLLM → /version (check "version" field)
     """
 ```
 
-每种服务器类型有不同的元数据获取方式：
+Each server type has different metadata retrieval methods:
 
-| 服务器 | 端点 | 上下文长度来源 |
+| Server | Endpoint | Context Length Source |
 |---|---|---|
-| Ollama | /api/show | model_info.context_length 或 num_ctx 参数 |
+| Ollama | /api/show | model_info.context_length or num_ctx parameter |
 | LM Studio | /api/v1/models | loaded_instances.config.context_length |
 | vLLM | /v1/models/{model} | max_model_len |
-| llama.cpp | /v1/props | n_ctx (实际分配的上下文) |
+| llama.cpp | /v1/props | n_ctx (actual allocated context) |
 
-### 端点元数据获取
+### Endpoint Metadata Retrieval
 
 ```python
 def fetch_endpoint_model_metadata(base_url, api_key):
     """
-    1. 尝试 {base_url}/models 和 {base_url}/v1/models
-    2. 解析每个模型的 context_length、max_completion_tokens、pricing
-    3. 如果是 llama.cpp → 额外查询 /v1/props 获取实际 n_ctx
-    4. 缓存 5 分钟
+    1. Attempt {base_url}/models and {base_url}/v1/models
+    2. Parse context_length, max_completion_tokens, pricing for each model
+    3. If llama.cpp → additionally query /v1/props for actual n_ctx
+    4. Cache for 5 minutes
     """
 ```
 
-### 持久化缓存
+### Persistent Cache
 
 ```python
-# 缓存 key: model@base_url
-# 同一模型名从不同提供商服务可能有不同限制
+# Cache key: model@base_url
+# The same model name from different providers might have different limitations
 def save_context_length(model, base_url, length):
-    # 写入 ~/.hermes/context_length_cache.yaml
-    # 格式: {context_lengths: {"qwen3@http://localhost:11434/v1": 131072}}
+    # Writes to ~/.hermes/context_length_cache.yaml
+    # Format: {context_lengths: {"qwen3@http://localhost:11434/v1": 131072}}
 ```
 
-### 错误消息中的上下文长度提取
+### Extracting Context Length from Error Messages
 
 ```python
 def parse_context_limit_from_error(error_msg):
     """
-    从 API 错误消息中提取实际上下文限制:
+    Extracts actual context limits from API error messages:
     - "maximum context length is 32768 tokens"
     - "context_length_exceeded: 131072"
     - "250000 tokens > 200000 maximum"
     """
 ```
 
-## 核心组件
+## Core Components
 
-### 1. models.dev 集成
+### 1. models.dev Integration
 
 ```python
-# 4000+ 模型，109+ 提供商
-# 离线优先: 打包快照 → 磁盘缓存 → 网络获取 → 后台刷新(60分钟)
+# 4000+ models, 109+ providers
+# Offline-first: bundled snapshot → disk cache → network fetch → background refresh (60 minutes)
 
 @dataclass
 class ModelInfo:
@@ -118,57 +118,57 @@ class ModelInfo:
     provider_id: str
     reasoning: bool
     tool_call: bool
-    attachment: bool       # 视觉支持
+    attachment: bool       # Vision support
     context_window: int
     max_output: int
-    cost_input: float      # 每百万 token
+    cost_input: float      # Per million tokens
     cost_output: float
     cost_cache_read: float
-    # ... 更多字段
+    # ... more fields
 ```
 
-**三级缓存**：
-1. **内存缓存**：1 小时 TTL
-2. **磁盘缓存**：`~/.hermes/models_dev_cache.json`
-3. **网络获取**：`https://models.dev/api.json`
+**Three-level Cache**:
+1. **In-memory cache**: 1 hour TTL
+2. **Disk cache**: `~/.hermes/models_dev_cache.json`
+3. **Network fetch**: `https://models.dev/api.json`
 
-### 2. 模型能力查询
+### 2. Model Capability Query
 
 ```python
 def get_model_capabilities(provider, model) -> ModelCapabilities:
     """
-    返回:
-    - supports_tools: 是否支持工具调用
-    - supports_vision: 是否支持视觉
-    - supports_reasoning: 是否支持推理
-    - context_window: 上下文窗口
-    - max_output_tokens: 最大输出
-    - model_family: 模型家族
+    Returns:
+    - supports_tools: Whether tool calling is supported
+    - supports_vision: Whether vision is supported
+    - supports_reasoning: Whether reasoning is supported
+    - context_window: Context window
+    - max_output_tokens: Maximum output
+    - model_family: Model family
     """
 ```
 
-### 3. 模型切换系统
+### 3. Model Switching System
 
 ```python
 def switch_model(raw_input, current_provider, current_model, ...) -> ModelSwitchResult:
     """
-    两条路径:
+    Two paths:
     
-    A. 给定 --provider:
-       1. 解析提供商 → 解析凭证 → 解析别名或使用原样
-       2. 无模型 → 从端点自动检测
+    A. Given --provider:
+       1. Parse provider → parse credentials → resolve alias or use as-is
+       2. No model → auto-detect from endpoint
     
-    B. 未给定 --provider:
-       1. 在当前提供商尝试别名
-       2. 别名存在但当前提供商没有 → 回退到其他认证提供商
-       3. 聚合器 → vendor/model slug 转换
-       4. 聚合器目录搜索
-       5. detect_provider_for_model() 兜底
-       6. 解析凭证 → 规范化模型名
+    B. Provider not given:
+       1. Attempt alias with current provider
+       2. Alias exists but not with current provider → fallback to other authenticated providers
+       3. Aggregator → vendor/model slug conversion
+       4. Aggregator directory search
+       5. detect_provider_for_model() as fallback
+       6. Parse credentials → normalize model name
     """
 ```
 
-### 4. 别名系统
+### 4. Alias System
 
 ```python
 MODEL_ALIASES = {
@@ -177,13 +177,13 @@ MODEL_ALIASES = {
     "gpt5":    ModelIdentity("openai", "gpt-5"),
     "gemini":  ModelIdentity("google", "gemini"),
     "qwen":    ModelIdentity("qwen", "qwen"),
-    # ... 20+ 短别名
+    # ... 20+ short aliases
 }
 ```
 
-别名解析是**动态的**——通过查询 models.dev 目录找到匹配的最新模型版本，而非硬编码。
+Alias resolution is **dynamic**—finding the latest matching model version by querying the models.dev directory, rather than being hardcoded.
 
-### 5. Provider 前缀处理
+### 5. Provider Prefix Handling
 
 ```python
 _PROVIDER_PREFIXES = frozenset({
@@ -194,80 +194,80 @@ _PROVIDER_PREFIXES = frozenset({
 def _strip_provider_prefix(model):
     """
     "local:my-model" → "my-model"
-    "qwen3.5:27b" → "qwen3.5:27b"  (保留 Ollama tag)
-    "deepseek:latest" → "deepseek:latest" (保留 Ollama tag)
+    "qwen3.5:27b" → "qwen3.5:27b"  (retains Ollama tag)
+    "deepseek:latest" → "deepseek:latest" (retains Ollama tag)
     """
 ```
 
-**关键**：区分 provider 前缀和 Ollama 的 model:tag 格式。
+**Key**: Differentiate between provider prefixes and Ollama's `model:tag` format.
 
-### 6. 智能模糊匹配
+### 6. Smart Fuzzy Matching
 
-上下文长度默认值使用**最长 key 优先**的模糊匹配：
+Context length default values use **longest key precedence** fuzzy matching:
 
 ```python
 DEFAULT_CONTEXT_LENGTHS = {
-    "claude-sonnet-4.6": 1000000,   # 特定版本
-    "claude": 200000,               # 兜底 (必须排在后面)
+    "claude-sonnet-4.6": 1000000,   # Specific version
+    "claude": 200000,               # Fallback (must be later)
     "gpt-5": 128000,
     "gemini": 1048576,
     "qwen": 131072,
     # ...
 }
 
-# 只检查 default_model in model (不是反向)
-# 避免 "claude-sonnet-4" 错误匹配 "claude-sonnet-4-6"
+# Only checks default_model in model (not reverse)
+# Avoids "claude-sonnet-4" erroneously matching "claude-sonnet-4-6"
 ```
 
-### 7. 上下文探测降级
+### 7. Context Probing Degradation
 
 ```python
 CONTEXT_PROBE_TIERS = [128_000, 64_000, 32_000, 16_000, 8_000]
 
 def get_next_probe_tier(current_length):
-    """从 128K 开始，遇错逐步降级"""
+    """Starts from 128K, progressively degrades upon error"""
 ```
 
-### 8. Token 估算
+### 8. Token Estimation
 
 ```python
 def estimate_tokens_rough(text):
-    """~4 chars/token 的粗略估算"""
+    """Rough estimation of ~4 chars/token"""
     return len(text) // 4
 
 def estimate_request_tokens_rough(messages, system_prompt, tools):
     """
-    完整请求估算，包括:
-    - 系统提示
-    - 对话消息
-    - 工具 schemas (50+ 工具可达 20-30K tokens)
+    Full request estimation, including:
+    - System prompt
+    - Chat messages
+    - Tool schemas (50+ tools can reach 20-30K tokens)
     """
 ```
 
-## 设计优越性
+## Design Advantages
 
-### 对比硬编码方案
+### Comparison with Hardcoded Solutions
 
-| 维度 | 硬编码 | Smart Model Routing |
+| Dimension | Hardcoded | Smart Model Routing |
 |---|---|---|
-| 新模型支持 | 需要更新代码 | models.dev 自动更新 |
-| 本地服务器 | 手动配置 | 自动探测 4 种服务器类型 |
-| 上下文长度 | 静态字典 | 10 级解析链（0-9） |
-| 凭证管理 | 硬编码 | 通过 runtime_provider 解析 |
-| 错误恢复 | 无 | 从错误消息提取限制 |
-| 离线支持 | 无 | 打包快照 + 磁盘缓存 |
+| New model support | Requires code updates | models.dev auto-updates |
+| Local servers | Manual configuration | Auto-detects 4 server types |
+| Context length | Static dictionary | 10-level resolution chain (0-9) |
+| Credential management | Hardcoded | Resolved via runtime_provider |
+| Error recovery | None | Extracts limits from error messages |
+| Offline support | None | Bundled snapshot + disk cache |
 
-## 配置与操作
+## Configuration and Operation
 
-### 显式覆盖
+### Explicit Override
 
 ```yaml
 # config.yaml
 model:
-  context_length: 128000  # 直接覆盖所有检测
+  context_length: 128000  # Directly overrides all detections
 ```
 
-### 别名扩展
+### Alias Extension
 
 ```yaml
 # config.yaml
@@ -278,13 +278,13 @@ model_aliases:
     base_url: "https://ollama.com/v1"
 ```
 
-## 定价估算
+## Pricing Estimation
 
 ```python
 # agent/usage_pricing.py
 
 def estimate_usage_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """估算 API 调用成本"""
+    """Estimates API call cost"""
     pricing = {
         "claude-opus-4.6": {"input": 15.0, "output": 75.0},  # $/MTok
         "claude-sonnet-4": {"input": 3.0, "output": 15.0},
@@ -298,10 +298,10 @@ def estimate_usage_cost(model: str, prompt_tokens: int, completion_tokens: int) 
     return input_cost + output_cost
 ```
 
-## OpenRouter 提供商路由
+## OpenRouter Provider Routing
 
 ```python
-# 提供商偏好
+# Provider preferences
 provider_preferences = {}
 if self.providers_allowed:
     provider_preferences["order"] = self.providers_allowed
@@ -312,55 +312,55 @@ if self.providers_order:
 if self.provider_sort:
     provider_preferences["sort"] = self.provider_sort
 
-# 发送到 OpenRouter
+# Sent to OpenRouter
 extra_body["provider"] = provider_preferences
 ```
 
-### 提供商排序选项
+### Provider Sorting Options
 
 ```python
-# sort 选项
-"sort": "price"       # 按价格排序
-"sort": "throughput"  # 按吞吐量排序
-"sort": "latency"     # 按延迟排序
+# sort options
+"sort": "price"       # Sort by price
+"sort": "throughput"  # Sort by throughput
+"sort": "latency"     # Sort by latency
 ```
 
-## 元数据缓存
+## Metadata Cache
 
 ```python
-# OpenRouter 模型元数据缓存（1 小时 TTL）
+# OpenRouter model metadata cache (1 hour TTL)
 _model_metadata_cache: dict = {}
 _metadata_cache_time: float = 0
-_METADATA_CACHE_TTL = 3600  # 1 小时
+_METADATA_CACHE_TTL = 3600  # 1 hour
 
 def fetch_model_metadata(model: str = None) -> dict:
-    """获取模型元数据（带缓存）"""
+    """Fetches model metadata (with cache)"""
     now = time.time()
     if now - _metadata_cache_time < _METADATA_CACHE_TTL:
         return _model_metadata_cache
     
-    # 后台线程预温缓存
+    # Background thread pre-warms cache
     threading.Thread(
         target=lambda: fetch_model_metadata(),
         daemon=True,
     ).start()
 ```
 
-## 推理模型支持
+## Reasoning Model Support
 
 ```python
 def _supports_reasoning_extra_body(self) -> bool:
-    """判断是否可以安全发送 reasoning extra_body"""
+    """Determines if reasoning extra_body can be safely sent"""
     
-    # 直接 Nous Portal
+    # Direct Nous Portal
     if "nousresearch" in self._base_url_lower:
         return True
     
-    # OpenRouter 路由
+    # OpenRouter routing
     if "openrouter" not in self._base_url_lower:
         return False
     
-    # 已知支持推理的模型前缀
+    # Known prefixes for reasoning-enabled models
     reasoning_model_prefixes = (
         "deepseek/",
         "anthropic/",
@@ -372,10 +372,10 @@ def _supports_reasoning_extra_body(self) -> bool:
     return any(self.model.lower().startswith(prefix) for prefix in reasoning_model_prefixes)
 ```
 
-## 会话状态跟踪
+## Session State Tracking
 
 ```python
-# 累积 token 使用量
+# Accumulated token usage
 self.session_prompt_tokens = 0
 self.session_completion_tokens = 0
 self.session_total_tokens = 0
@@ -390,83 +390,83 @@ self.session_cost_status = "unknown"
 self.session_cost_source = "none"
 
 def reset_session_state(self):
-    """重置所有会话级 token 计数器"""
+    """Resets all session-level token counters"""
     self.session_total_tokens = 0
     self.session_input_tokens = 0
     self.session_output_tokens = 0
-    # ... 重置所有计数器
+    # ... reset all counters
     self._user_turn_count = 0
 ```
 
-## 新增 Provider（v0.10.0，2026-04-16）
+## New Providers (v0.10.0, 2026-04-16)
 
-### AWS Bedrock（原生 Converse API）
+### AWS Bedrock (Native Converse API)
 
-双路径架构（`agent/bedrock_adapter.py`，1098 行）：
-- **Claude 模型** → AnthropicBedrock SDK（保留 prompt caching、thinking budgets）
-- **非 Claude 模型** → Converse API via boto3（Nova、DeepSeek、Llama、Mistral）
+Dual-path architecture (`agent/bedrock_adapter.py`, 1098 lines):
+- **Claude models** → AnthropicBedrock SDK (retains prompt caching, thinking budgets)
+- **Non-Claude models** → Converse API via boto3 (Nova, DeepSeek, Llama, Mistral)
 
-特性：
-- IAM credential chain + Bedrock API Key 两种认证模式
-- `ListFoundationModels` + `ListInferenceProfiles` 动态模型发现
+Features:
+- IAM credential chain + Bedrock API Key two authentication modes
+- `ListFoundationModels` + `ListInferenceProfiles` dynamic model discovery
 - Streaming + delta callbacks + guardrails
-- `/usage` 定价支持 7 个 Bedrock 模型
-- `hermes doctor` + `hermes auth` 集成
+- `/usage` pricing support for 7 Bedrock models
+- `hermes doctor` + `hermes auth` integration
 
 ### Google Gemini CLI OAuth
 
-通过 Cloud Code Assist 后端（`cloudcode-pa.googleapis.com`）接入 Gemini，与 Google 官方 `gemini-cli` 使用同一后端。
+Accesses Gemini via the Cloud Code Assist backend (`cloudcode-pa.googleapis.com`), using the same backend as Google's official `gemini-cli`.
 
-两个新模块（`agent/` 下）：
-- `google_oauth.py`（1048 行）：PKCE Authorization Code flow，跨进程文件锁（fcntl POSIX / msvcrt Windows），refresh token 自动续期，并发刷新去重
-- `gemini_cloudcode_adapter.py`：provider 注册，模型发现，streaming
+Two new modules (under `agent/`):
+- `google_oauth.py` (1048 lines): PKCE Authorization Code flow, inter-process file locks (fcntl POSIX / msvcrt Windows), automatic refresh token renewal, concurrent refresh deduplication
+- `gemini_cloudcode_adapter.py`: provider registration, model discovery, streaming
 
-支持免费层（个人账户每日配额）和付费层（Standard/Enterprise via GCP project）。
+Supports both free tier (personal account daily quota) and paid tier (Standard/Enterprise via GCP project).
 
 ### Ollama Cloud
 
-作为内置 provider 注册（与 gemini、xai 等平级）：
-- `OLLAMA_API_KEY` 环境变量认证
-- Provider 别名：`ollama` → custom（本地），`ollama_cloud` → ollama-cloud
-- models.dev 集成获取准确上下文长度
-- 动态模型发现 + 磁盘缓存（1 小时 TTL）
-- 保留 Ollama `model:tag` 格式（不做规范化）
+Registered as a built-in provider (on par with gemini, xai, etc.):
+- `OLLAMA_API_KEY` environment variable authentication
+- Provider aliases: `ollama` → custom (local), `ollama_cloud` → ollama-cloud
+- models.dev integration for accurate context length
+- Dynamic model discovery + disk cache (1 hour TTL)
+- Retains Ollama `model:tag` format (no normalization)
 
-### MiniMax OAuth（v2026.4.23+）
+### MiniMax OAuth (v2026.4.23+)
 
-新增 `minimax-oauth` 一等公民 provider，使用 PKCE device-code flow（移植自 `openclaw/extensions/minimax/oauth.ts`）。`hermes_cli/auth.py` 新增：
+Added `minimax-oauth` as a first-class provider, using PKCE device-code flow (ported from `openclaw/extensions/minimax/oauth.ts`). `hermes_cli/auth.py` additions:
 
-- 8 个 `MINIMAX_OAUTH_*` 常量（client ID、scope、grant type、global/CN base URLs、inference URLs、refresh skew）
-- `auth_type="oauth_minimax"` provider 类型，与 device-code/external OAuth 并列
-- 别名：`minimax-portal` / `minimax-global` / `minimax_oauth`
-- 标准 OAuth2 refresh_token grant 自动续期，`invalid_grant` / `refresh_token_reused` 触发 relogin
-- 与 MiniMax-M2.7 模型对接（`agent/minimax_oauth_provider.py`）
+- 8 `MINIMAX_OAUTH_*` constants (client ID, scope, grant type, global/CN base URLs, inference URLs, refresh skew)
+- `auth_type="oauth_minimax"` provider type, alongside device-code/external OAuth
+- Aliases: `minimax-portal` / `minimax-global` / `minimax_oauth`
+- Standard OAuth2 refresh_token grant automatic renewal, `invalid_grant` / `refresh_token_reused` triggers relogin
+- Integrates with MiniMax-M2.7 models (`agent/minimax_oauth_provider.py`)
 
-### Step Plan（v2026.4.18+）
+### Step Plan (v2026.4.18+)
 
-StepFun 首款 API-key provider（Step Plan），支持国际和中国区设置。从 `/step_plan/v1/models` 动态发现模型，离线有编码向 fallback 目录。
+StepFun's first API-key provider (Step Plan), supporting international and China region settings. Dynamically discovers models from `/step_plan/v1/models`, with a hardcoded fallback directory for offline use.
 
-### Vercel AI Gateway（v2026.4.18+）
+### Vercel AI Gateway (v2026.4.18+)
 
-新增 `ai-gateway` provider（别名 `vercel-ai-gateway`），通过 Vercel AI Gateway 统一访问多家模型：
-- 定制模型列表（`VERCEL_AI_GATEWAY_MODELS` in `hermes_cli/models.py`，OSS first，Kimi K2.5 推荐默认）
-- Live pricing 翻译（Vercel input/output → prompt/completion 格式）
-- 自动把免费 Moonshot 模型顶到 picker 首位
-- 提供商 picker 排序优先级提升
-- 使用 Vercel 的 deep-link 创建 API key
+Added `ai-gateway` provider (alias `vercel-ai-gateway`), providing unified access to multiple models via Vercel AI Gateway:
+- Custom model list (`VERCEL_AI_GATEWAY_MODELS` in `hermes_cli/models.py`, OSS first, Kimi K2.5 recommended by default)
+- Live pricing translation (Vercel input/output → prompt/completion format)
+- Automatically prioritizes free Moonshot models in the picker
+- Increased sorting priority in provider picker
+- Uses Vercel's deep-link to create API key
 
-### OpenRouter 工具支持过滤（v2026.4.18+）
+### OpenRouter Tool Support Filtering (v2026.4.18+)
 
-hermes-agent 是工具调用优先的 agent，只有支持 `tools` 的模型才能驱动 agent 循环。`fetch_openrouter_models()` 现在过滤掉 `supported_parameters` 明确不含 `tools` 的模型（如纯图像、completion-only）。
+Hermes-agent is a tool-calling-first agent; only models that support `tools` can drive the agent loop. `fetch_openrouter_models()` now filters out models whose `supported_parameters` explicitly do not include `tools` (e.g., image-only, completion-only models).
 
-宽容模式：`supported_parameters` 缺失时默认允许（Nous Portal、私有镜像、旧 snapshot 可能不填）。只隐藏明确声明了但不含 `tools` 的模型。
+Lenient mode: If `supported_parameters` is missing, it's allowed by default (Nous Portal, private mirrors, old snapshots might not populate it). Only models explicitly declared *not* to support `tools` are hidden.
 
-### Tool Gateway（Nous 订阅制工具网关）
+### Tool Gateway (Nous Subscription-based Tool Gateway)
 
-把 web 搜索、TTS、浏览器、图片生成等工具的 API 调用路由到 Nous 托管的统一网关，用户无需自备各家 API key：
+Routes API calls for tools like web search, TTS, browser, image generation to a unified gateway hosted by Nous, eliminating the need for users to provide their own API keys for each service:
 
 ```yaml
-# config.yaml — 按工具类别 opt-in
+# config.yaml — Opt-in by tool category
 web:
   use_gateway: true
 tts:
@@ -477,13 +477,13 @@ browser:
   use_gateway: true
 ```
 
-- `managed_nous_tools_enabled()` 检查 Nous 登录状态 + 订阅层级
-- `prefers_gateway(section)` 共享辅助函数，4 个工具运行时统一使用
-- `hermes model` 交互流程：Nous 登录后展示可用工具列表，用户选择启用全部 / 仅未配置的 / 跳过
-- 免费层用户看到升级提示
+- `managed_nous_tools_enabled()` checks Nous login status + subscription tier
+- `prefers_gateway(section)` shared helper function, used uniformly by 4 tool runtimes
+- `hermes model` interaction flow: After Nous login, available tool list is displayed; users can choose to enable all / only unconfigured / skip
+- Free tier users see an upgrade prompt
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[context-compressor-architecture]] — 使用 get_model_context_length() 确定上下文限制
-- [[prompt-caching-optimization]] — 缓存成本信息来自 models.dev
-- [[auxiliary-client-architecture]] — 辅助模型通过 models.dev 解析上下文长度
+- [[context-compressor-architecture]] — Uses `get_model_context_length()` to determine context limits
+- [[prompt-caching-optimization]] — Cached cost information comes from models.dev
+- [[auxiliary-client-architecture]] — Auxiliary models resolve context length via models.dev

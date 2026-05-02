@@ -1,5 +1,5 @@
 ---
-title: Context References（@ 引用系统）
+title: Context References (@ Reference System)
 created: 2026-04-10
 updated: 2026-04-10
 type: concept
@@ -7,75 +7,75 @@ tags: [context, references, input, architecture]
 sources: [agent/context_references.py, cli.py]
 ---
 
-# Context References（@ 引用系统）
+# Context References (@ Reference System)
 
-## 概述
+## Overview
 
-Hermes 支持在用户输入中使用 `@` 前缀引用外部内容，系统会在发送给 LLM 前自动展开为实际内容并注入到消息中。
+Hermes supports referencing external content using the `@` prefix in user input. The system automatically expands these references into their actual content and injects them into the message before sending it to the LLM.
 
-## 支持的引用类型
+## Supported Reference Types
 
-| 语法 | 作用 | 示例 |
-|------|------|------|
-| `@file:路径` | 注入文件内容 | `@file:src/main.py` |
-| `@file:路径:行号` | 注入文件指定行 | `@file:main.py:10-50` |
-| `@folder:路径` | 注入目录结构 | `@folder:src/` |
-| `@diff` | 注入当前 git diff | `看看 @diff 有什么问题` |
-| `@staged` | 注入 git staged 变更 | `检查 @staged 的代码` |
-| `@url:地址` | 抓取网页内容注入 | `@url:https://example.com` |
-| `@git:引用` | 注入 git 对象内容 | `@git:HEAD~1` |
+| Syntax | Purpose | Example |
+|---|---|---|
+| `@file:path` | Inject file content | `@file:src/main.py` |
+| `@file:path:line_numbers` | Inject specific lines from a file | `@file:main.py:10-50` |
+| `@folder:path` | Inject directory structure | `@folder:src/` |
+| `@diff` | Inject current git diff | `Check @diff for any issues` |
+| `@staged` | Inject git staged changes | `Review the code in @staged` |
+| `@url:address` | Fetch and inject web page content | `@url:https://example.com` |
+| `@git:reference` | Inject git object content | `@git:HEAD~1` |
 
-## 处理流程
+## Processing Flow
 
 ```text
-用户输入: "帮我看看 @file:main.py 和 @diff 有什么问题"
+User Input: "Help me check @file:main.py and @diff for any issues"
     ↓
-parse_context_references() — 正则匹配所有 @ 引用
+parse_context_references() — Regex matches all @ references
     ↓
-_expand_reference() — 逐个展开为实际内容
+_expand_reference() — Expands each reference into actual content
     ↓
-安全检查:
-  - 路径必须在 cwd 或 allowed_root 内（防止路径逃逸）
-  - 拒绝敏感文件（.ssh/*, .env, .netrc 等）
-  - 注入总量不超过上下文窗口 50%（硬限制），超 25% 告警
+Security Checks:
+  - Path must be within cwd or allowed_root (prevents path traversal)
+  - Rejects sensitive files (.ssh/*, .env, .netrc, etc.)
+  - Total injected content does not exceed 50% of context window (hard limit); warns if over 25%
     ↓
-注入到消息末尾的 "--- Attached Context ---" 块
+Injects into the "--- Attached Context ---" block at the end of the message
     ↓
-发送给 LLM（@ 引用标记从原文中移除）
+Sends to LLM (@ reference markers are removed from the original text)
 ```
 
-## 安全机制
+## Security Mechanisms
 
-**敏感文件拦截**：以下路径会被拒绝注入：
-- `~/.ssh/*`（密钥、config）
-- `~/.bashrc`, `~/.zshrc`, `~/.profile`（shell 配置）
-- `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.pypirc`（凭证文件）
-- `skills/.hub/`（技能仓库内部文件）
+**Sensitive File Interception**: The following paths will be rejected for injection:
+- `~/.ssh/*` (Keys, config)
+- `~/.bashrc`, `~/.zshrc`, `~/.profile` (Shell configuration)
+- `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.pypirc` (Credential files)
+- `skills/.hub/` (Internal skill repository files)
 
-**注入量限制**：
-- 硬限制：注入内容不超过模型上下文窗口的 **50%**
-- 软限制：超过 **25%** 时打印警告
-- 超过硬限制时整个引用操作被拒绝（`blocked=True`）
+**Injection Volume Limits**:
+- Hard limit: Injected content must not exceed **50%** of the model's context window
+- Soft limit: A warning is printed when exceeding **25%**
+- The entire reference operation is rejected if the hard limit is exceeded (`blocked=True`)
 
-**路径安全**：引用路径被解析为绝对路径后，必须在 `cwd` 或 `allowed_root` 范围内，防止 `@file:../../etc/passwd` 类型的路径遍历攻击。
+**Path Security**: After reference paths are resolved to absolute paths, they must be within the `cwd` or `allowed_root` scope to prevent path traversal attacks like `@file:../../etc/passwd`.
 
-## 与 Context Files 的区别
+## Distinction from Context Files
 
-| | Context References（@引用） | Context Files（AGENTS.md 等） |
+| | Context References (@ References) | Context Files (e.g., AGENTS.md) |
 |---|---|---|
-| 触发方式 | 用户主动在输入中写 `@` | 系统自动加载 |
-| 注入位置 | 用户消息末尾 | system prompt |
-| 内容来源 | 文件/diff/URL/git | 固定文件名 |
-| 生命周期 | 单轮 | 整个会话 |
+| Trigger Method | User explicitly writes `@` in input | System automatically loads |
+| Injection Location | End of user message | System prompt |
+| Content Source | File/Diff/URL/Git | Fixed filenames |
+| Lifecycle | Single turn | Entire session |
 
-## 相关页面
+## Related Pages
 
-- [[prompt-builder-architecture]] — Context Files（AGENTS.md 等）的加载机制
-- [[security-defense-system]] — 安全检查体系
+- [[prompt-builder-architecture]] — Loading mechanism for Context Files (e.g., AGENTS.md)
+- [[security-defense-system]] — Security check system
 
-## 关键源码
+## Key Source Files
 
-| 文件 | 职责 |
-|------|------|
-| `agent/context_references.py` | 引用解析、展开、安全检查 |
-| `cli.py` | 调用 `preprocess_context_references()` 的入口 |
+| File | Responsibility |
+|---|---|
+| `agent/context_references.py` | Reference parsing, expansion, and security checks |
+| `cli.py` | Entry point for calling `preprocess_context_references()` |

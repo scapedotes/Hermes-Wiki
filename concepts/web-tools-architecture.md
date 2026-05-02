@@ -1,5 +1,5 @@
 ---
-title: Web Tools 搜索/提取架构
+title: Web Tools Search/Extraction Architecture
 created: 2026-04-08
 updated: 2026-04-08
 type: concept
@@ -7,235 +7,235 @@ tags: [tool, toolset, architecture, component]
 sources: [tools/web_tools.py]
 ---
 
-# Web Tools — 搜索/提取架构
+# Web Tools — Search/Extraction Architecture
 
-## 概述
+## Overview
 
-Web Tools 位于 `tools/web_tools.py`（88KB/2099行），提供**多后端 Web 搜索/提取/爬取**能力。支持 4 种后端提供商，所有后端对 Agent 暴露相同的 `web_search`、`web_extract`、`web_crawl` 工具接口。
+Web Tools, located at `tools/web_tools.py` (88KB/2099 lines), provides **multi-backend web search/extraction/crawling** capabilities. It supports 4 backend providers, all exposing the same `web_search`, `web_extract`, `web_crawl` tool interfaces to the Agent.
 
-核心理念：**内容获取优先于浏览器自动化**——简单信息检索使用 web_search/web_extract（更快、更便宜），仅在需要交互时才使用 browser 工具。
+Core philosophy: **Content acquisition takes precedence over browser automation** — use `web_search`/`web_extract` for simple information retrieval (faster, cheaper), and only resort to browser tools when interaction is required.
 
-## 架构原理
+## Architectural Principles
 
-### 四大后端
+### The Four Backends
 
-| 后端 | Search | Extract | Crawl | 认证 |
+| Backend | Search | Extract | Crawl | Authentication |
 |---|---|---|---|---|
-| **Firecrawl** | ✅ | ✅ | ✅ | API Key 或 Nous Gateway |
+| **Firecrawl** | ✅ | ✅ | ✅ | API Key or Nous Gateway |
 | **Exa** | ✅ | ✅ | ❌ | EXA_API_KEY |
 | **Parallel** | ✅ | ✅ | ❌ | PARALLEL_API_KEY |
 | **Tavily** | ✅ | ✅ | ✅ | TAVILY_API_KEY |
 
-### 后端选择链
+### Backend Selection Chain
 
 ```python
 def _get_backend():
-    """解析优先级:
-    1. config.yaml web.backend (显式指定: parallel/firecrawl/tavily/exa)
+    """Resolution priority:
+    1. config.yaml web.backend (explicitly specified: parallel/firecrawl/tavily/exa)
     2. FIRECRAWL_API_KEY / FIRECRAWL_API_URL / tool-gateway
     3. PARALLEL_API_KEY
     4. TAVILY_API_KEY
     5. EXA_API_KEY
-    6. 默认: firecrawl (向后兼容)
+    6. Default: firecrawl (for backward compatibility)
     """
 ```
 
-### Firecrawl 双路径架构
+### Firecrawl Dual-Path Architecture
 
-Firecrawl 是默认后端，支持两种连接模式：
+Firecrawl is the default backend and supports two connection modes:
 
-| 模式 | 路径 | 适用对象 |
+| Mode | Path | Applicability |
 |---|---|---|
-| **直接模式** | `FIRECRAWL_API_KEY` / `FIRECRAWL_API_URL` | 所有用户 |
-| **托管 Gateway** | Nous 托管的 tool-gateway | Nous 订阅者 |
+| **Direct Mode** | `FIRECRAWL_API_KEY` / `FIRECRAWL_API_URL` | All Users |
+| **Managed Gateway** | Nous-hosted tool-gateway | Nous Subscribers |
 
 ```python
 def _get_firecrawl_client():
-    """优先级:
-    1. 直接 Firecrawl 配置 (api_key + api_url)
-    2. Nous 托管 Gateway (nous_user_token + gateway_origin)
+    """Priority:
+    1. Direct Firecrawl Configuration (api_key + api_url)
+    2. Nous Managed Gateway (nous_user_token + gateway_origin)
     """
-    # 客户端缓存 —— 配置不变时复用同一实例
+    # Client cache — reuse the same instance if configuration remains unchanged
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
 ```
 
-**优越性**：Nous 订阅者无需单独购买 Firecrawl，通过 tool-gateway 共享访问。
+**Advantage**: Nous subscribers do not need to purchase Firecrawl separately; they gain shared access via the tool-gateway.
 
-## 核心组件
+## Core Components
 
-### 1. web_search_tool — 网络搜索
+### 1. web_search_tool — Web Search
 
 ```python
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
-    后端路由:
-    - parallel → _parallel_search() [支持 agentic/fast/one-shot 模式]
-    - exa → _exa_search() [支持 highlights 提取]
+    Backend routing:
+    - parallel → _parallel_search() [Supports agentic/fast/one-shot modes]
+    - exa → _exa_search() [Supports highlights extraction]
     - tavily → _tavily_request("search")
     - firecrawl → client.search()
     """
 ```
 
-返回统一格式：`{"success": true, "data": {"web": [{"title", "url", "description", "position"}]}}`
+Returns a unified format: `{"success": true, "data": {"web": [{"title", "url", "description", "position"}]}}`
 
-### 2. web_extract_tool — URL 内容提取
+### 2. web_extract_tool — URL Content Extraction
 
 ```python
 async def web_extract_tool(
     urls: List[str],
-    format: str = "markdown",      # markdown 或 html
+    format: str = "markdown",      # markdown or html
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = 5000         # 触发 LLM 处理的最小长度
+    min_length: int = 5000         # minimum length to trigger LLM processing
 ) -> str:
 ```
 
-**核心流程**：
-1. 安全检查（密钥注入 + SSRF + 网站策略）
-2. 后端提取（Firecrawl scrape / Exa get_contents / Parallel extract / Tavily extract）
-3. LLM 智能压缩（`process_content_with_llm`）
-4. 输出裁剪（只保留 url/title/content/error）
+**Core Workflow**:
+1. Security checks (key injection + SSRF + website policy)
+2. Backend extraction (Firecrawl scrape / Exa get_contents / Parallel extract / Tavily extract)
+3. LLM intelligent compression (`process_content_with_llm`)
+4. Output trimming (only retains url/title/content/error)
 
-### 3. web_crawl_tool — 网站爬取
+### 3. web_crawl_tool — Website Crawling
 
 ```python
 async def web_crawl_tool(
     url: str,
-    instructions: str = None,    # 提取指令（仅 Tavily 支持）
-    depth: str = "basic",        # basic 或 advanced
+    instructions: str = None,    # Extraction instructions (Tavily only)
+    depth: str = "basic",        # basic or advanced
     use_llm_processing: bool = True
 ) -> str:
 ```
 
-目前仅 Firecrawl 和 Tavily 支持 crawl。Parallel 无 crawl API。
+Currently, only Firecrawl and Tavily support crawling. Parallel does not have a crawl API.
 
-## LLM 内容处理引擎
+## LLM Content Processing Engine
 
-这是 Web Tools 最具创新性的部分——用 LLM 自动压缩网页内容。
+This is the most innovative part of Web Tools — automatically compressing web content with LLMs.
 
-### 处理策略
+### Processing Strategy
 
 ```python
 def process_content_with_llm(content, url, title, model, min_length):
     """
-    内容分级处理:
-    < 5000 chars → 跳过处理，直接返回原始内容
-    5000 ~ 500K chars → 单次 LLM 摘要
-    500K ~ 2M chars → 分块处理 + 合成
-    > 2M chars → 拒绝处理
+    Content tiered processing:
+    < 5000 chars → Skip processing, return original content directly
+    5000 ~ 500K chars → Single LLM summary
+    500K ~ 2M chars → Chunked processing + synthesis
+    > 2M chars → Refuse to process
     """
 ```
 
-### 分块处理（Chunked Processing）
+### Chunked Processing
 
 ```python
 async def _process_large_content_chunked(content, chunk_size=100K):
-    # 1. 将内容切分为 100K chars 的块
-    # 2. 并行摘要每个块 (asyncio.gather)
-    # 3. 合成所有块摘要为统一摘要
-    # 4. 硬性限制: 最终输出 ≤ 5000 chars
+    # 1. Split content into 100K char chunks
+    # 2. Summarize each chunk in parallel (asyncio.gather)
+    # 3. Synthesize all chunk summaries into a unified summary
+    # 4. Hard limit: Final output ≤ 5000 chars
 ```
 
-**设计亮点**：
-- 每个块使用**专门的 prompt**（"这是大文档的一节，不要写引言和结论"）
-- 并行处理所有块，不串行等待
-- 合成步骤**去除冗余**并整合为连贯摘要
-- 如果合成失败，**回退为拼接所有块摘要**
+**Design Highlights**:
+- Each chunk uses a **dedicated prompt** ("This is a section of a large document, do not write introductions or conclusions")
+- Processes all chunks in parallel, no sequential waiting
+- The synthesis step **removes redundancy** and integrates into a coherent summary
+- If synthesis fails, **fall back to concatenating all chunk summaries**
 
-### 压缩率
+### Compression Ratio
 
-典型压缩比：10-50x（原始内容 → LLM 摘要）
+Typical compression ratio: 10-50x (original content → LLM summary)
 
 ```
-原始: 50,000 chars → 处理后: 2,000 chars (4%)
-原始: 200,000 chars → 处理后: 4,500 chars (2.25%)
+Original: 50,000 chars → Processed: 2,000 chars (4%)
+Original: 200,000 chars → Processed: 4,500 chars (2.25%)
 ```
 
-## 安全设计
+## Security Design
 
-### 四层防护
+### Four Layers of Protection
 
-| 层级 | 保护 | 实现 |
+| Layer | Protection | Implementation |
 |---|---|---|
-| **URL 密钥注入** | 阻止 URL 中嵌入 API Key | `_PREFIX_RE` 检测 |
-| **SSRF 防护** | 阻止访问私有地址 | `is_safe_url()` |
-| **网站策略** | 黑名单域名拦截 | `check_website_access()` |
-| **重定向检查** | 阻止重定向到内部地址 | 提取后检查 `sourceURL` |
+| **URL Key Injection** | Prevents embedding API Keys in URLs | `_PREFIX_RE` detection |
+| **SSRF Protection** | Prevents access to private addresses | `is_safe_url()` |
+| **Website Policy** | Blacklisted domain interception | `check_website_access()` |
+| **Redirection Check** | Prevents redirection to internal addresses | Checks `sourceURL` after extraction |
 
-### Base64 图片清理
+### Base64 Image Cleanup
 
 ```python
 def clean_base64_images(text: str) -> str:
-    """移除 base64 编码图片，替换为 [BASE64_IMAGE_REMOVED]"""
-    # 防止大量 base64 数据挤占上下文窗口
+    """Removes base64 encoded images, replaces with [BASE64_IMAGE_REMOVED]"""
+    # Prevents large amounts of base64 data from occupying the context window
 ```
 
-## 标准化层
+## Standardization Layer
 
-不同后端返回不同的数据格式。Web Tools 通过**标准化函数**统一输出：
+Different backends return different data formats. Web Tools unifies output through **standardization functions**:
 
 ```python
-_extract_web_search_results(response)    # Firecrawl 多格式提取
-_normalize_tavily_search_results(raw)    # Tavily → 标准格式
-_normalize_tavily_documents(raw)         # Tavily extract/crawl → 标准格式
-_to_plain_object(value)                  # SDK 对象 → Python dict
-_normalize_result_list(values)           # 混合 SDK/list → dict list
+_extract_web_search_results(response)    # Firecrawl multi-format extraction
+_normalize_tavily_search_results(raw)    # Tavily → Standard format
+_normalize_tavily_documents(raw)         # Tavily extract/crawl → Standard format
+_to_plain_object(value)                  # SDK object → Python dict
+_normalize_result_list(values)           # Mixed SDK/list → dict list
 ```
 
-**优越性**：Agent 永远收到统一格式的数据，不需要根据后端类型做不同的解析。
+**Advantage**: The Agent always receives data in a unified format, eliminating the need for different parsing based on backend type.
 
-## Debug 模式
+## Debug Mode
 
 ```bash
 export WEB_TOOLS_DEBUG=true
 ```
 
-启用后自动记录：
-- 所有工具调用及参数
-- 原始 API 响应
-- LLM 压缩指标（原始大小/处理后大小/压缩比）
-- 最终处理结果
+When enabled, it automatically logs:
+- All tool calls and parameters
+- Raw API responses
+- LLM compression metrics (original size / processed size / compression ratio)
+- Final processing results
 
-日志保存到：`~/.hermes/logs/web_tools_debug_UUID.json`
+Logs are saved to: `~/.hermes/logs/web_tools_debug_UUID.json`
 
-## 设计优越性
+## Design Advantages
 
-### 对比直接调用 API
+### Compared to Direct API Calls
 
-| 维度 | 直接调用 API | Web Tools |
+| Dimension | Direct API Calls | Web Tools |
 |---|---|---|
-| 后端切换 | 需要改代码 | config.yaml 一键切换 |
-| 内容压缩 | 手动处理 | 自动 LLM 摘要 |
-| 大内容处理 | 容易超上下文 | 分块 + 合成 |
-| 安全防护 | 需要自己实现 | SSRF + 注入 + 策略三层防护 |
-| 格式统一 | 每个 API 格式不同 | 统一输出格式 |
-| 调试 | 需要手动打印 | 内置 Debug 模式 |
+| Backend Switching | Requires code changes | `config.yaml` one-click switching |
+| Content Compression | Manual processing | Automatic LLM summarization |
+| Large Content Handling | Prone to context overflow | Chunking + synthesis |
+| Security Protection | Requires self-implementation | SSRF + Injection + Policy three-layer protection |
+| Format Unification | Each API has a different format | Unified output format |
+| Debugging | Requires manual printing | Built-in Debug mode |
 
-### LLM 处理的优越性
+### Advantages of LLM Processing
 
-没有 LLM 处理时，Agent 收到的是原始 HTML/markdown 全文（可能数十万字）。有了 LLM 处理后：
-- **上下文节省**：压缩 10-50x
-- **信息密度提升**：只保留关键事实和数据
-- **格式统一**：所有页面都是结构化 Markdown 摘要
-- **优雅降级**：LLM 失败时回退为截断原始内容
+Without LLM processing, the Agent receives the full original HTML/markdown text (potentially hundreds of thousands of characters). With LLM processing:
+- **Context Saving**: 10-50x compression
+- **Increased Information Density**: Only key facts and data are retained
+- **Unified Format**: All pages are structured Markdown summaries
+- **Graceful Degradation**: Falls back to truncated original content if LLM processing fails
 
-## 配置与操作
+## Configuration and Operation
 
-### 选择后端
+### Selecting a Backend
 
 ```yaml
 # config.yaml
 web:
-  backend: firecrawl  # 或 exa, parallel, tavily
+  backend: firecrawl  # or exa, parallel, tavily
 ```
 
-### 环境变量
+### Environment Variables
 
 ```bash
-# Firecrawl 直接模式
+# Firecrawl Direct Mode
 export FIRECRAWL_API_KEY=fc-xxx
-export FIRECRAWL_API_URL=https://your-self-hosted.com  # 可选
+export FIRECRAWL_API_URL=https://your-self-hosted.com  # Optional
 
 # Exa
 export EXA_API_KEY=exa-xxx
@@ -246,20 +246,20 @@ export PARALLEL_API_KEY=par-xxx
 # Tavily
 export TAVILY_API_KEY=tav-xxx
 
-# LLM 处理配置
+# LLM Processing Configuration
 export AUXILIARY_WEB_EXTRACT_MODEL=google/gemini-3-flash-preview
 ```
 
-### 禁用 LLM 处理
+### Disabling LLM Processing
 
 ```python
-# 快速提取，不需要压缩
+# Fast extraction, no compression needed
 content = await web_extract_tool(["https://example.com"], use_llm_processing=False)
 ```
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[auxiliary-client-architecture]] — LLM 内容处理通过 `async_call_llm(task="web_extract")` 调用
-- [[tool-registry-architecture]] — web_search/web_extract 通过 registry 注册
-- [[browser-tool-architecture]] — 文档建议简单信息获取优先用 web_tools
-- [[context-compressor-architecture]] — 类似的 LLM 压缩理念应用于不同场景
+- [[auxiliary-client-architecture]] — LLM content processing is invoked via `async_call_llm(task="web_extract")`
+- [[tool-registry-architecture]] — `web_search`/`web_extract` are registered via the registry
+- [[browser-tool-architecture]] — Documentation suggests prioritizing `web_tools` for simple information retrieval
+- [[context-compressor-architecture]] — Similar LLM compression principles applied to different scenarios

@@ -1,5 +1,5 @@
 ---
-title: Tool Registry 工具注册系统架构
+title: Tool Registry System Architecture
 created: 2026-04-08
 updated: 2026-04-15
 type: concept
@@ -7,104 +7,104 @@ tags: [tool, toolset, tool-registry, architecture, component]
 sources: [tools/registry.py, model_tools.py]
 ---
 
-# Tool Registry — 工具注册系统架构
+# Tool Registry — System Architecture
 
-## 概述
+## Overview
 
-Tool Registry 是 Hermes Agent 工具系统的**中央骨架**，位于 `tools/registry.py`（275行/10KB）。它实现了**声明式工具注册 + 集中式调度**的设计模式，取代了早期 `model_tools.py` 中分散维护的平行数据结构。
+The Tool Registry is the **central backbone** of the Hermes Agent's tool system, located at `tools/registry.py` (275 lines/10KB). It implements a design pattern of **declarative tool registration + centralized dispatch**, replacing the previously scattered and parallel data structures maintained in `model_tools.py`.
 
-所有工具文件（`tools/*.py`）在模块导入时通过 `registry.register()` 自动注册，`model_tools.py` 只负责查询注册表并触发发现流程。
+All tool files (`tools/*.py`) are automatically registered via `registry.register()` upon module import, and `model_tools.py` is solely responsible for querying the registry and triggering the discovery process.
 
-## 架构原理
+## Architecture Principles
 
-### 导入链（循环导入安全）
+### Import Chain (Circular Import Safe)
 
 ```
-tools/registry.py  (零外部依赖 — 被所有工具文件导入)
+tools/registry.py  (Zero external dependencies — imported by all tool files)
        ↑
-tools/*.py  (每个文件在模块级别调用 registry.register())
+tools/*.py  (Each file calls registry.register() at the module level)
        ↑
-model_tools.py  (导入 registry + 触发 _discover_tools())
+model_tools.py  (Imports registry + triggers _discover_tools())
        ↑
 run_agent.py, cli.py, batch_runner.py
 ```
 
-这个设计**完全避免了循环导入**问题：registry 不导入任何工具文件，工具文件只导入 registry，model_tools 是唯一同时导入 registry 和所有工具的模块。
+This design **completely avoids circular import** issues: the registry does not import any tool files, tool files only import the registry, and `model_tools` is the only module that imports both the registry and all tools.
 
-### 核心数据结构
+### Core Data Structures
 
 ```python
 class ToolEntry:
-    """单个工具的元数据"""
+    """Metadata for a single tool"""
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
     )
 
 class ToolRegistry:
-    """单例注册表，收集所有工具的 schema + handler"""
+    """Singleton registry, collects schema + handler for all tools"""
     def __init__(self):
-        self._tools: Dict[str, ToolEntry] = {}         # 工具名 → 元数据
-        self._toolset_checks: Dict[str, Callable] = {}  # toolset → 检查函数
+        self._tools: Dict[str, ToolEntry] = {}         # Tool name → Metadata
+        self._toolset_checks: Dict[str, Callable] = {}  # Toolset → Check function
 ```
 
-**设计亮点**：使用 `__slots__` 减少内存开销（每个 ToolEntry 约节省 40% 内存），这在注册 100+ 工具时效果显著。
+**Design Highlight**: Using `__slots__` reduces memory overhead (saving approximately 40% memory per `ToolEntry`), which is significantly effective when registering 100+ tools.
 
-### 自动发现内置工具（2026-04-14）
+### Automatic Discovery of Built-in Tools (2026-04-14)
 
-早期 `model_tools.py` 维护一个 hardcoded 的工具 import 列表,添加新工具需要同时改两个文件。现在 `tools/registry.py` 提供 `discover_builtin_tools()`,由 `model_tools.py` 在启动时调用:
+Previously, `model_tools.py` maintained a hardcoded list of tool imports; adding a new tool required modifying two files simultaneously. Now, `tools/registry.py` provides `discover_builtin_tools()`, which is called by `model_tools.py` at startup:
 
 ```python
 def discover_builtin_tools(tools_dir=None) -> List[str]:
-    """扫描 tools/*.py,导入所有自注册工具模块"""
+    """Scans tools/*.py and imports all self-registering tool modules"""
     tools_path = Path(tools_dir) or Path(__file__).resolve().parent
     module_names = [
         f"tools.{path.stem}"
         for path in sorted(tools_path.glob("*.py"))
         if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-        and _module_registers_tools(path)  # AST 检查
+        and _module_registers_tools(path)  # AST check
     ]
-    # importlib.import_module() 每个,触发模块级 registry.register()
+    # importlib.import_module() for each, triggering module-level registry.register()
 ```
 
-**AST 级过滤**:`_module_registers_tools()` 用 `ast.parse` 解析模块,只在**模块顶层**检测到 `registry.register(...)` 调用才会 import。这样:
-- 普通工具文件(`tools/terminal_tool.py` 等)会被识别并加载
-- 辅助模块(不在顶层注册工具)被跳过
-- 帮助函数内部的 `registry.register()` 调用不会被误判
+**AST-level Filtering**: `_module_registers_tools()` uses `ast.parse` to parse modules, importing only if a `registry.register(...)` call is detected at the **module top level**. This ensures:
+- Regular tool files (e.g., `tools/terminal_tool.py`) are identified and loaded.
+- Helper modules (that do not register tools at the top level) are skipped.
+- `registry.register()` calls within helper functions are not misidentified.
 
-**豁免列表**:`__init__.py`、`registry.py` 本身、`mcp_tool.py`(MCP 工具按需动态加载,不走这个路径)。
+**Exclusion List**: `__init__.py`, `registry.py` itself, and `mcp_tool.py` (MCP tools are dynamically loaded on demand and do not follow this path).
 
-**添加新工具流程简化**:以前要改 3 处(工具文件 + `model_tools.py` import + toolsets 定义),现在只要两处(工具文件 + toolsets 定义),auto-discovery 自动拿起新文件。
+**Simplified New Tool Addition Process**: Previously, three places needed modification (tool file + `model_tools.py` import + toolsets definition); now, only two places are required (tool file + toolsets definition), as auto-discovery automatically picks up new files.
 
-## 核心操作
+## Core Operations
 
-### 1. 注册（register）
+### 1. Register
 
-每个工具文件在导入时自动注册：
+Each tool file is automatically registered upon import:
 
 ```python
-# tools/terminal_tool.py 中
+# In tools/terminal_tool.py
 registry.register(
     name="terminal",
     toolset="terminal",
     schema={"name": "terminal", "description": "...", "parameters": {...}},
     handler=lambda args, **kw: terminal_tool(...),
-    check_fn=lambda: True,           # 可用性检查
-    requires_env=[],                 # 环境变量依赖
+    check_fn=lambda: True,           # Availability check
+    requires_env=[],                 # Environment variable dependencies
     is_async=False,
 )
 ```
 
-- **名称冲突检测**：如果同名工具属于不同 toolset，发出 warning 并覆盖
-- **check_fn 缓存**：每个 toolset 只记录第一个 check_fn，避免重复检查
+- **Name Conflict Detection**: If tools with the same name belong to different toolsets, a warning is issued, and the entry is overwritten.
+- **check_fn Caching**: Only the first `check_fn` for each toolset is recorded, preventing redundant checks.
 
-### 2. 可用性检查（get_definitions）
+### 2. Availability Check (get_definitions)
 
-返回 OpenAI 格式的工具 schema 列表，仅包含通过 check_fn 的工具：
+Returns a list of tool schemas in OpenAI format, including only tools that pass their `check_fn`:
 
 ```python
 def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
-    # 缓存 check_fn 结果 — 同一 toolset 只检查一次
+    # Cache check_fn results — check each toolset only once
     check_results: Dict[Callable, bool] = {}
     for name in sorted(tool_names):
         entry = self._tools.get(name)
@@ -112,17 +112,17 @@ def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dic
             if entry.check_fn not in check_results:
                 check_results[entry.check_fn] = bool(entry.check_fn())
             if not check_results[entry.check_fn]:
-                continue  # 跳过不可用工具
+                continue  # Skip unavailable tool
         result.append({"type": "function", "function": {**entry.schema, "name": entry.name}})
     return result
 ```
 
-**优越性**：
-- **按需过滤**：只有环境依赖满足的工具才会被发送给 LLM，避免模型调用不存在的工具
-- **检查缓存**：同一 toolset 的 check_fn 只执行一次，而非每个工具各执行一次
-- **静默模式**：`quiet=True` 抑制调试日志，适合批量查询
+**Advantages**:
+- **On-demand Filtering**: Only tools with satisfied environmental dependencies are sent to the LLM, preventing the model from calling non-existent tools.
+- **Check Caching**: The `check_fn` for the same toolset is executed only once, rather than once for each tool.
+- **Quiet Mode**: `quiet=True` suppresses debug logs, suitable for bulk queries.
 
-### 3. 调度执行（dispatch）
+### 3. Dispatch Execution
 
 ```python
 def dispatch(self, name: str, args: dict, **kwargs) -> str:
@@ -138,72 +138,72 @@ def dispatch(self, name: str, args: dict, **kwargs) -> str:
         return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 ```
 
-**优越性**：
-- **统一错误格式**：所有异常被捕获并返回 `{"error": "..."}` JSON，保证 LLM 能解析
-- **异步桥接**：自动检测 `is_async` 标志并通过 `_run_async` 桥接，调用者无需关心
-- **未知工具安全失败**：返回 JSON 错误而非抛出异常
+**Advantages**:
+- **Unified Error Format**: All exceptions are caught and returned as `{"error": "..."}` JSON, ensuring the LLM can parse them.
+- **Asynchronous Bridging**: Automatically detects the `is_async` flag and bridges through `_run_async`, so callers do not need to worry about it.
+- **Safe Failure for Unknown Tools**: Returns a JSON error instead of raising an exception.
 
-### 4. 动态注销（deregister）
+### 4. Dynamic Deregistration
 
 ```python
 def deregister(self, name: str) -> None:
     entry = self._tools.pop(name, None)
-    # 如果该 toolset 没有其他工具了，清理 check_fn
+    # If no other tools belong to this toolset, clean up its check_fn
     if entry.toolset in self._toolset_checks and not any(
         e.toolset == entry.toolset for e in self._tools.values()
     ):
         self._toolset_checks.pop(entry.toolset, None)
 ```
 
-**使用场景**：MCP 动态工具发现 — 当 MCP 服务器发送 `notifications/tools/list_changed` 时，需要 nuke-and-repave 旧工具并重新注册。
+**Use Case**: MCP dynamic tool discovery — when the MCP server sends `notifications/tools/list_changed`, it requires "nuking-and-repaving" old tools and re-registering them.
 
-### 5. 查询辅助方法
+### 5. Query Helper Methods
 
-| 方法 | 用途 |
+| Method | Purpose |
 |---|---|
-| `get_all_tool_names()` | 返回所有已注册工具名（排序） |
-| `get_schema(name)` | 绕过 check_fn 获取原始 schema，用于 token 估算 |
-| `get_toolset_for_tool(name)` | 查询工具所属 toolset |
-| `get_emoji(name)` | 获取工具对应的 emoji |
-| `get_tool_to_toolset_map()` | 返回 `{tool_name: toolset_name}` 映射 |
-| `is_toolset_available(toolset)` | 检查 toolset 是否满足要求 |
-| `check_toolset_requirements()` | 返回所有 toolset 的可用性状态 |
-| `get_available_toolsets()` | 返回 toolset 元数据（工具列表、环境依赖等） |
-| `check_tool_availability()` | 返回可用/不可用 toolset 分类 |
+| `get_all_tool_names()` | Returns all registered tool names (sorted) |
+| `get_schema(name)` | Bypasses `check_fn` to retrieve the raw schema, used for token estimation |
+| `get_toolset_for_tool(name)` | Queries the toolset a tool belongs to |
+| `get_emoji(name)` | Retrieves the emoji corresponding to the tool |
+| `get_tool_to_toolset_map()` | Returns a `{tool_name: toolset_name}` mapping |
+| `is_toolset_available(toolset)` | Checks if a toolset meets requirements |
+| `check_toolset_requirements()` | Returns the availability status for all toolsets |
+| `get_available_toolsets()` | Returns toolset metadata (tool list, environmental dependencies, etc.) |
+| `check_tool_availability()` | Returns classification of available/unavailable toolsets |
 
-## 设计优越性
+## Design Advantages
 
-### 对比旧架构
+### Comparison with Old Architecture
 
-| 维度 | 旧方案（分散在 model_tools.py） | 新方案（Tool Registry） |
+| Dimension | Old Approach (Scattered in model_tools.py) | New Approach (Tool Registry) |
 |---|---|---|
-| 数据结构 | 平行维护多个 dict | 单一注册表 |
-| 循环导入 | 容易出错 | 零依赖，导入安全 |
-| 扩展性 | 添加工具需改 model_tools.py | 只需在工具文件调用 register() |
-| 动态发现 | 不支持 | 支持 deregister + 重新注册 |
-| 测试 | 难以 mock | 单例可替换 |
-| 可用性检查 | 分散逻辑 | 集中缓存 |
+| Data Structure | Multiple dicts maintained in parallel | Single registry |
+| Circular Imports | Prone to errors | Zero dependencies, import safe |
+| Extensibility | Adding tools required modifying model_tools.py | Only requires calling `register()` in the tool file |
+| Dynamic Discovery | Not supported | Supports `deregister` + re-register |
+| Testing | Difficult to mock | Singleton is replaceable |
+| Availability Check | Scattered logic | Centralized caching |
 
-### 单一职责原则
+### Single Responsibility Principle
 
-- **Registry**：只管注册、查询、调度
-- **Tool files**：只管实现和注册自己
-- **Model tools**：只管发现和路由
-- **Run agent**：只管执行循环
+- **Registry**: Solely responsible for registration, querying, and dispatching.
+- **Tool files**: Solely responsible for implementing and registering themselves.
+- **Model tools**: Solely responsible for discovery and routing.
+- **Run agent**: Solely responsible for executing the loop.
 
-每个模块职责清晰，依赖方向是单向的。
+Each module has clear responsibilities, and the dependency direction is unidirectional.
 
-## 配置与操作
+## Configuration and Operations
 
-### 添加新工具
+### Adding New Tools
 
-1. 在 `tools/your_tool.py` 中实现工具函数
-2. 在文件末尾调用 `registry.register(...)`
-3. 在 `hermes_cli/toolsets.py` 中添加工具集
+1. Implement the tool function in `tools/your_tool.py`.
+2. Call `registry.register(...)` at the end of the file.
+3. Add the toolset in `hermes_cli/toolsets.py`.
 
-> 注意:**不再需要**手改 `model_tools.py` 的 import 列表。`discover_builtin_tools()` 会在启动时扫描 `tools/*.py`,只要顶层有 `registry.register(...)` 调用,模块就会被自动 import。
+> Note: It is **no longer necessary** to manually modify `model_tools.py`'s import list. `discover_builtin_tools()` will scan `tools/*.py` at startup, and as long as there is a top-level `registry.register(...)` call, the module will be automatically imported.
 
-### 查看已注册工具
+### Viewing Registered Tools
 
 ```python
 from tools.registry import registry
@@ -211,18 +211,18 @@ print(registry.get_all_tool_names())
 print(registry.get_tool_to_toolset_map())
 ```
 
-### 查看工具集可用性
+### Viewing Toolset Availability
 
 ```python
 print(registry.check_toolset_requirements())
-# 输出: {'terminal': True, 'web': False, 'browser': True, ...}
+# Output: {'terminal': True, 'web': False, 'browser': True, ...}
 ```
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[toolsets-system]] — Registry 按 toolset 组织工具
-- [[model-tools-dispatch]] — model_tools.py 通过 Registry 发现工具
-- [[mcp-and-plugins]] — MCP 使用 deregister/register 实现动态工具发现
-- [[large-tool-result-handling]] — 调度结果经过统一错误格式处理
-- [[fuzzy-matching-engine]] — patch 工具使用的 8 层模糊匹配引擎
-- [[code-execution-sandbox]] — execute_code 沙箱工具
+- [[toolsets-system]] — Registry organizes tools by toolset.
+- [[model-tools-dispatch]] — `model_tools.py` discovers tools via the Registry.
+- [[mcp-and-plugins]] — MCP uses `deregister`/`register` to achieve dynamic tool discovery.
+- [[large-tool-result-handling]] — Dispatch results are processed through a unified error format.
+- [[fuzzy-matching-engine]] — The 8-layer fuzzy matching engine used by patch tools.
+- [[code-execution-sandbox]] — The `execute_code` sandbox tool.

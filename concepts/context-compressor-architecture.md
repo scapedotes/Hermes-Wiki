@@ -1,5 +1,5 @@
 ---
-title: Context Compressor 上下文压缩架构
+title: Context Compressor: Context Compression Architecture
 created: 2026-04-08
 updated: 2026-04-17
 type: concept
@@ -7,110 +7,110 @@ tags: [architecture, module, component, agent, context-compression]
 sources: [agent/context_engine.py, agent/context_compressor.py, run_agent.py, hermes_state.py, plugins/context_engine/__init__.py]
 ---
 
-# Context Compressor — 上下文压缩架构
+# Context Compressor — Context Compression Architecture
 
-## 概述
+## Overview
 
-Context Compressor 位于 `agent/context_compressor.py`，是一个**自动上下文窗口压缩**类。当对话接近模型上下文限制时，使用辅助 LLM（廉价/快速模型）对中间轮次进行结构化摘要，同时保护头部和尾部上下文。
+The Context Compressor, located at `agent/context_compressor.py`, is an **automatic context window compression** class. When a conversation approaches the model's context limit, it uses an auxiliary LLM (a cheaper/faster model) to generate structured summaries of intermediate turns, while protecting the head and tail context.
 
-### Context Engine 插件化（2026-04-10）
+### Context Engine Pluginization (2026-04-10)
 
-之前上下文管理只有一种方式——`ContextCompressor`（摘要压缩），想换策略就得改源码。现在抽出了 `ContextEngine` ABC，`ContextCompressor` 变成它的一个实现，第三方可以写插件替换，不用改 Hermes 源码。
+Previously, context management had only one approach—`ContextCompressor` (summary compression). Changing strategies required modifying the source code. Now, `ContextEngine` ABC has been extracted, making `ContextCompressor` one of its implementations. Third parties can write plugins to replace it without altering Hermes' source code.
 
-**本质：把"上下文快满了怎么办"这个决策从硬编码变成了可插拔。**
+**Essence: The decision of "what to do when context is full" has evolved from hardcoding to pluggable.**
 
 ```yaml
-# config.yaml — 一行切换
+# config.yaml — One line to switch
 context:
-  engine: "compressor"   # 默认摘要压缩；设为插件名切换（如 "lcm"）
+  engine: "compressor"   # Default summary compression; set to plugin name to switch (e.g., "lcm")
 ```
 
-**可能的替代引擎举例：**
+**Examples of Possible Alternative Engines:**
 
-| 引擎 | 策略 | 适用场景 |
+| Engine | Strategy | Applicable Scenario |
 |------|------|---------|
-| compressor（内置） | LLM 摘要压缩 | 通用，默认 |
-| lcm（假设） | 旧对话存向量数据库，按需语义检索 | 超长会话，需要精确回忆 |
-| sliding-window（假设） | 简单滑动窗口截断，不做摘要 | 低成本，不需要 auxiliary 模型 |
+| compressor (built-in) | LLM summary compression | General, default |
+| lcm (hypothetical) | Stores old conversations in vector DB, semantic retrieval on demand | Very long sessions, precise recall needed |
+| sliding-window (hypothetical) | Simple sliding window truncation, no summarization | Low cost, no auxiliary model needed |
 
-**ContextEngine ABC 要求实现 3 个核心方法**：
-- `name` — 引擎标识（property）
-- `should_compress(prompt_tokens)` — 是否需要压缩
-- `compress(messages, current_tokens)` — 执行压缩，返回新消息列表
+**`ContextEngine` ABC requires the implementation of 3 core methods**:
+- `name` — Engine identifier (property)
+- `should_compress(prompt_tokens)` — Whether compression is needed
+- `compress(messages, current_tokens)` — Executes compression, returns new message list
 
-**可选方法**：`on_session_start/end`、`get_tool_schemas`（引擎可暴露工具给 agent，如 `lcm_grep`）、`handle_tool_call`、`update_model`。
+**Optional methods**: `on_session_start/end`, `get_tool_schemas` (engine can expose tools to the agent, e.g., `lcm_grep`), `handle_tool_call`, `update_model`.
 
-**插件目录**：`plugins/context_engine/<name>/`，包含 `plugin.yaml` + `__init__.py`（实现 `register(ctx)` 或暴露 `ContextEngine` 子类）。
+**Plugin directory**: `plugins/context_engine/<name>/`, containing `plugin.yaml` + `__init__.py` (implements `register(ctx)` or exposes a `ContextEngine` subclass).
 
-**只允许一个引擎活跃**，同 MemoryProvider 的 "至多一个外部" 约束。
+**Only one engine is allowed to be active**, similar to MemoryProvider's "at most one external" constraint.
 
-核心理念：**长对话不需要丢弃上下文——用结构化摘要替代旧轮次，保留关键信息。**
+Core Philosophy: **Long conversations do not require discarding context—old turns are replaced with structured summaries, preserving key information.**
 
-## 架构原理
+## Architectural Principles
 
-### 压缩算法
+### Compression Algorithm
 
 ```text
-算法流程（v3）:
-  Phase 1: 廉价预处理（纯本地，不调 LLM，零 token 成本）
-    ├── Pass 1: MD5 去重 — 同一文件读 5 次只留最新一份
-    ├── Pass 2: Smart Collapse — 旧工具输出替换为信息化单行摘要
-    └── Pass 3: tool_call 参数截断 — >500 字符截到 200
-  Phase 2: 确定边界
-    保护头部（系统提示+首轮）+ 按 token 预算保护尾部
-  Phase 3: LLM 结构化摘要（只处理 Phase 1 瘦身后的中间部分）
-  Phase 4: 组装 + 清理孤立的 tool_call/tool_result 配对
+Algorithm Flow (v3):
+  Phase 1: Cheap preprocessing (purely local, no LLM calls, zero token cost)
+    ├── Pass 1: MD5 Deduplication — If the same file is read 5 times, only the latest instance is kept
+    ├── Pass 2: Smart Collapse — Old tool outputs replaced with informative single-line summaries
+    └── Pass 3: tool_call argument truncation — >500 characters truncated to 200
+  Phase 2: Boundary determination
+    Protect head (system prompt + first turn) + protect tail by token budget
+  Phase 3: LLM structured summarization (only processes the middle section after Phase 1 slimming)
+  Phase 4: Assembly + cleanup of orphaned tool_call/tool_result pairs
 ```
 
-#### 旧版（v2）vs 新版（v3）执行方式对比
+#### v2 vs v3 Execution Comparison
 
-**旧版只有一步**：token 达到阈值 → 把中间对话原样交给 LLM 总结 → 替换。问题是工具输出动辄几 KB（`npm test` 200 行、`read_file` 读整个文件），全部喂给 LLM 去总结，**总结本身就很费 token**；同一文件读了 5 次，5 份完整内容都在；压缩效果差时反复触发，每次都调 LLM 白白空转。
+**The old version (v2) had only one step**: tokens reach threshold → intermediate dialogue given directly to LLM for summarization → replacement. The problem was that tool outputs could be several KBs (e.g., `npm test` 200 lines, `read_file` reads entire file), feeding all of it to the LLM for summarization was **token-intensive** itself; if the same file was read 5 times, all 5 full contents were present; when compression was inefficient, it would repeatedly trigger, making redundant LLM calls.
 
-**新版三阶段**：Phase 1 是零成本的本地操作（字符串哈希、正则替换、截断），往往就能砍掉 30-50% 的 token。Phase 3 的 LLM 调用处理的数据量因此小得多。加上防抖机制（连续 2 次低效就停止），整体 LLM 调用次数和每次调用的输入量都显著减少。
+**The new version (v3) has three phases**: Phase 1 consists of zero-cost local operations (string hashing, regex replacement, truncation), often cutting 30-50% of tokens. Phase 3's LLM call therefore processes significantly less data. Coupled with an anti-thrashing mechanism (stops after 2 consecutive inefficient compressions), the overall number of LLM calls and the input quantity per call are significantly reduced.
 
-### 演进历史
+### Evolution History
 
-| 改进 | v1 | v2 | v3（2026-04-14+） |
+| Improvement | v1 | v2 | v3 (2026-04-14+) |
 |---|---|---|---|
-| 摘要模板 | 无结构 | Goal/Progress/Decisions/Files/Next Steps | **编号的 Completed Actions + Active State**（action-log 风格） |
-| 摘要更新 | 每次从头生成 | 迭代更新 | 迭代更新（继续编号） |
-| 尾部保护 | 固定消息数 | Token 预算（按比例缩放） | 同 v2 |
-| 工具输出修剪 | 无 | 通用占位符 `_PRUNED_TOOL_PLACEHOLDER` | **Smart Collapse**：按工具类型生成信息化单行摘要 |
-| 去重 | 无 | 无 | **MD5 去重**：相同 tool result 只保留最新一份 |
-| tool_call 参数 | 原样保留 | 原样保留 | **>500 字符自动截断到 200 字符** |
-| 摘要预算 | 固定 | 按压缩内容比例缩放 | 同 v2，但 `max_tokens` 从 2× 降到 **1.3×**（防膨胀） |
-| 反颠簸 | 无 | 无 | **连续 2 次压缩<10%→跳过**，避免抖动循环 |
-| 多模态消息 | 可能崩溃 | 可能崩溃 | 在 dedup/prune 路径上跳过 list content |
-| 压缩 note 幂等 | 仅首次压缩追加 | 同 v1 | **检测已存在**则不重复追加 |
-| Failure cooldown | 10 分钟固定 | 10 分钟固定 | **无 provider 10 分钟，瞬态错误 60 秒** |
-| 工具调用完整性 | 可能丢失 | _sanitize_tool_pairs 修复孤儿对 | 同 v2 |
+| Summary Template | Unstructured | Goal/Progress/Decisions/Files/Next Steps | **Numbered Completed Actions + Active State** (action-log style) |
+| Summary Update | Regenerated from scratch each time | Iterative update | Iterative update (continues numbering) |
+| Tail Protection | Fixed number of messages | Token budget (scaled proportionally) | Same as v2 |
+| Tool Output Pruning | None | Generic placeholder `_PRUNED_TOOL_PLACEHOLDER` | **Smart Collapse**: Generates informative single-line summaries per tool type |
+| Deduplication | None | None | **MD5 Deduplication**: Only the latest instance of identical tool results is kept |
+| `tool_call` Arguments | Retained as-is | Retained as-is | **>500 characters automatically truncated to 200 characters** |
+| Summary Budget | Fixed | Scaled proportionally to compressed content | Same as v2, but `max_tokens` reduced from 2× to **1.3×** (anti-inflation) |
+| Anti-Thrashing | None | None | **Skip if 2 consecutive compressions save <10%**, avoids thrashing loops |
+| Multimodal Messages | Potential crash | Potential crash | Skips list content in dedup/prune paths |
+| Compression Note Idempotency | Appended only on first compression | Same as v1 | **Detects existing notes** and does not append duplicates |
+| Failure Cooldown | Fixed 10 minutes | Fixed 10 minutes | **No provider 10 minutes, transient error 60 seconds** |
+| Tool Call Integrity | Potential loss | `_sanitize_tool_pairs` fixes orphaned pairs | Same as v2 |
 
-## 核心组件
+## Core Components
 
-### 1. Token 预算管理
+### 1. Token Budget Management
 
 ```python
 class ContextCompressor:
     def __init__(self, model, threshold_percent=0.50):
         self.context_length = get_model_context_length(model)
-        self.threshold_tokens = int(self.context_length * 0.50)  # 50% 触发
-        self.tail_token_budget = int(self.threshold_tokens * 0.20)  # 尾部预算
-        self.max_summary_tokens = min(int(self.context_length * 0.05), 12_000)  # 摘要上限
+        self.threshold_tokens = int(self.context_length * 0.50)  # Trigger at 50% usage
+        self.tail_token_budget = int(self.threshold_tokens * 0.20)  # Tail budget
+        self.max_summary_tokens = min(int(self.context_length * 0.05), 12_000)  # Summary ceiling
 ```
 
-**缩放设计**：尾部预算和摘要上限都与模型上下文窗口成比例，大窗口模型获得更丰富的摘要。
+**Scaling Design**: Both tail budget and summary ceiling are proportional to the model's context window, allowing larger context models to receive richer summaries.
 
-### 2. 工具输出修剪（三段式预处理）
+### 2. Tool Output Pruning (Three-Phase Preprocessing)
 
-`_prune_old_tool_results()` 现在做三件事，全部不调 LLM：
+`_prune_old_tool_results()` now performs three tasks, all without LLM calls:
 
-**Pass 1 — MD5 去重**：相同的 tool result（>200 chars，非 multimodal）按 MD5 hash 去重，只保留最新一份，旧副本替换为：
+**Pass 1 — MD5 Deduplication**: Identical tool results (>200 chars, non-multimodal) are deduplicated by MD5 hash, keeping only the latest instance. Old duplicates are replaced with:
 ```
 [Duplicate tool output — same content as a more recent call]
 ```
-典型场景：反复 read 同一个文件,或反复 search 相同 pattern。
+Typical scenarios: repeatedly reading the same file, or repeatedly searching for the same pattern.
 
-**Pass 2 — Smart Collapse**（2026-04-14）：按 `tool_call_id` 查出工具名 + 参数,生成**信息化的 1 行摘要**替代原本的通用占位符。不同工具有不同模板:
+**Pass 2 — Smart Collapse** (2026-04-14): By looking up the tool name + arguments using `tool_call_id`, it generates an **informative 1-line summary** to replace the generic placeholder. Different tools have different templates:
 
 ```text
 [terminal] ran `npm test` -> exit 0, 47 lines output
@@ -122,90 +122,87 @@ class ContextCompressor:
 [memory] save on long-term
 ```
 
-相比旧的 `_PRUNED_TOOL_PLACEHOLDER`,摘要保留了**具体命令 / 文件路径 / 结果规模**,模型看历史时仍然知道"之前做过什么"。内置模板覆盖 terminal / read_file / write_file / search_files / patch / browser_* / web_search / web_extract / delegate_task / execute_code / skill_* / vision_analyze / memory / todo / clarify / text_to_speech / cronjob / process,其他工具走通用 fallback。
+Compared to the old `_PRUNED_TOOL_PLACEHOLDER`, the summaries retain **specific commands / file paths / result scale**, allowing the model to understand "what was done before" when reviewing history. Built-in templates cover terminal / read_file / write_file / search_files / patch / browser_* / web_search / web_extract / delegate_task / execute_code / skill_* / vision_analyze / memory / todo / clarify / text_to_speech / cronjob / process, with other tools falling back to a generic template.
 
-**Pass 3 — tool_call 参数截断**:assistant 消息里如果有 `tool_calls.function.arguments` 长度 > 500,截断到前 200 字符 + `...[truncated]`。修复场景:`write_file(content=50KB)` 这种调用即使工具结果被修剪,参数本身仍然占上下文。
+**Pass 3 — `tool_call` Argument Truncation**: If an assistant message has `tool_calls.function.arguments` longer than 500 characters, it's truncated to the first 200 characters + `...[truncated]`. This fixes scenarios like `write_file(content=50KB)` where even if the tool result is pruned, the arguments themselves still consume significant context.
 
-**多模态保护**:所有三个 Pass 都检测 `isinstance(content, list)` 跳过多模态消息,避免破坏图像/音频内容。
+**Multimodal Protection**: All three Passes detect `isinstance(content, list)` to skip multimodal messages, avoiding corruption of image/audio content.
 
-### 3. 摘要预算计算
+### 3. Summary Budget Calculation
 
 ```python
 def _compute_summary_budget(turns_to_summarize):
     content_tokens = estimate_messages_tokens_rough(turns_to_summarize)
-    budget = int(content_tokens * 0.20)  # 压缩到 20%
+    budget = int(content_tokens * 0.20)  # Compress to 20%
     return max(2000, min(budget, self.max_summary_tokens))
 ```
 
-**设计**：摘要预算与待压缩内容成比例，但上下限受控。
+**Design**: The summary budget is proportional to the content to be compressed, but controlled by upper and lower limits.
 
-### 4. 序列化为摘要文本
+### 4. Serialization for Summary Text
 
 ```python
 def _serialize_for_summary(turns):
     """
-    将对话轮次序列化为带标签的文本:
-    [TOOL RESULT xxx]: 内容 (截断为 3000 chars: 前2000 + ... + 后800)
-    [ASSISTANT]: 内容 + [Tool calls: tool_name(args), ...]
-    [USER]: 内容 (截断为 3000 chars)
+    Serializes conversation turns into tagged text:
+    [TOOL RESULT xxx]: content (truncated to 3000 chars: first 2000 + ... + last 800)
+    [ASSISTANT]: content + [Tool calls: tool_name(args), ...]
+    [USER]: content (truncated to 3000 chars)
     """
 ```
 
-**关键**：包含工具调用名称和参数，使摘要器能保留具体的文件路径、命令和输出。
+**Key**: Includes tool call names and arguments, enabling the summarizer to retain specific file paths, commands, and outputs.
 
-### 5. 结构化摘要生成
+### 5. Structured Summary Generation
 
-#### 首次压缩（v3 action-log 模板，2026-04-14）
+#### First Compression (v3 action-log template, 2026-04-14)
 
 ```text
 ## Goal
-[用户要完成什么]
+[What the user is trying to accomplish]
 
 ## Constraints & Preferences
-[用户偏好、编码风格、约束、重要决策]
+[User preferences, coding style, constraints, important decisions]
 
 ## Completed Actions
-[编号动作列表,每条格式: N. ACTION target — outcome [tool: name]
-例:
+[Numbered list of actions, each formatted as: N. ACTION target — outcome [tool: name]
+Example:
 1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
 2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
 3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
-要求具体:文件路径、命令、行号、结果都必须保留]
+Be CONCRETE: file paths, commands, line numbers, and results MUST be retained]
 
 ## Active State
-[当前工作状态:
-- 工作目录和分支
-- 已修改/创建的文件及简要说明
-- 测试状态 (X/Y passing)
-- 运行中的进程或服务器
-- 关键环境信息]
+[Current working state:
+- Working directory and branch
+- Modified/created files and brief descriptions
+- Test status (X/Y passing)
+- Running processes or servers
+- Key environment information]
 
 ## In Progress
-[压缩触发时正在进行的工作]
+[Work that was ongoing when compression was triggered]
 
 ## Blocked
-[未解决的阻塞/错误,包含完整错误消息]
+[Unresolved blockers/errors, including full error messages]
 
 ## Key Decisions
-[重要技术决策及其 WHY]
+[Important technical decisions and their WHY]
 
 ## Resolved Questions
-[用户问过且已回答的问题 — 包含答案,避免下一任 agent 重复回答]
+[Questions the user asked that were ALREADY answered — include the answer, to prevent subsequent agents from re-answering]
 
 ## Pending User Asks
-[用户问过但尚未回答的问题]
-
-## Remaining Work
-[未完成的任务]
+[Questions the user asked that have NOT yet been answered]
 
 ## Relevant Files
-[读取/修改/创建的文件]
+[Files read/modified/created]
 
 ## Critical Context
-[具体值、错误消息、配置细节等不能丢失的信息]
+[Specific values, error messages, configuration details, etc. that MUST NOT be lost]
 ```
 
-#### v2 摘要模板（旧版，作为对比参考）
+#### v2 Summary Template (Old Version, for comparison)
 
 ```text
 ## Goal
@@ -244,21 +241,21 @@ def _serialize_for_summary(turns):
 [Which tools were used, how they were used effectively, and any tool-specific discoveries]
 ```
 
-#### v2 → v3 提示词逐项差异
+#### v2 → v3 Prompt Differences Item by Item
 
-| 段落 | v2 | v3 | 改动原因 |
+| Section | v2 | v3 | Reason for Change |
 |------|----|----|----------|
-| 完成记录 | `## Progress > ### Done` 自由文本 | `## Completed Actions` 强制编号 + 固定格式 `N. ACTION target — outcome [tool: name]` | 自由文本容易产出模糊描述（"modified some files"），编号格式强制 LLM 给出具体路径、命令、行号 |
-| 格式示例 | 无 | 给了 3 条示例（READ/PATCH/TEST） | Few-shot 引导 LLM 遵守格式 |
-| 当前状态 | 无独立段落，信息散落在 Progress 里 | 新增 `## Active State`（工作目录、分支、修改文件、测试状态、运行中进程） | 续接 agent 最需要的是"现在在哪、状态如何"，旧版没有明确的地方承载 |
-| 工具模式 | `## Tools & Patterns` 独立段落 | **删除**，工具信息融入 Completed Actions 的 `[tool: name]` | 工具和操作本身绑定，单独列段冗余浪费 token |
-| 具体度要求 | "Be specific — include file paths, command outputs, error messages, and concrete values" | "Be CONCRETE — include file paths, command outputs, error messages, **line numbers**, and specific values. **Avoid vague descriptions like 'made some changes' — say exactly what changed.**" | 显式禁止模糊描述，新增 line numbers 要求 |
-| 迭代更新 | "ADD new progress. Move from 'In Progress' to 'Done'" | "ADD new completed actions to numbered list **(continue numbering)**. Update 'Active State' to reflect current state. **Remove information only if it is clearly obsolete.**" | "continue numbering" 防止每次压缩编号重置导致信息丢失；"only if clearly obsolete" 防止过度删除 |
-| 摘要预算 | `max_tokens = budget × 2` | `max_tokens = budget × 1.3` | 2× 太宽松导致摘要膨胀，1.3× 更紧凑 |
+| Completed Actions | `## Progress > ### Done` free text | `## Completed Actions` mandatory numbering + fixed format `N. ACTION target — outcome [tool: name]` | Free text often produced vague descriptions ("modified some files"). Numbered format forces LLM to provide specific paths, commands, line numbers. |
+| Format Examples | None | Provided 3 examples (READ/PATCH/TEST) | Few-shot prompting guides LLM to adhere to the format. |
+| Current State | No dedicated section, information scattered in Progress | Added `## Active State` (working directory, branch, modified files, test status, running processes) | The most crucial information for continuing an agent's work is "where am I now, what's the state?". The old version had no clear place for this. |
+| Tool Patterns | `## Tools & Patterns` as a separate section | **Removed**. Tool information integrated into `[tool: name]` in Completed Actions. | Tools are inherently tied to actions; a separate section was redundant and wasted tokens. |
+| Specificity Requirement | "Be specific — include file paths, command outputs, error messages, and concrete values" | "Be CONCRETE — include file paths, command outputs, error messages, **line numbers**, and specific values. **Avoid vague descriptions like 'made some changes' — say exactly what changed.**" | Explicitly prohibits vague descriptions, added line numbers requirement. |
+| Iterative Update | "ADD new progress. Move from 'In Progress' to 'Done'" | "ADD new completed actions to numbered list **(continue numbering)**. Update 'Active State' to reflect current state. **Remove information only if it is clearly obsolete.**" | "Continue numbering" prevents information loss due to numbering reset on each compression. "Only if clearly obsolete" prevents excessive deletion. |
+| Summary Budget | `max_tokens = budget × 2` | `max_tokens = budget × 1.3` | 2× was too lenient, leading to summary inflation. 1.3× is more concise. |
 
-**核心设计思路**：v2 的模板留给 LLM 太多自由度，产出质量不稳定；v3 通过强制编号、具体示例、显式禁令把"怎么写摘要"从开放式变成填空式，压缩产出更可预测、信息密度更高。
+**Core Design Idea**: v2's template gave the LLM too much freedom, leading to inconsistent output quality; v3, through mandatory numbering, specific examples, and explicit prohibitions, transformed "how to write a summary" from an open-ended task into a fill-in-the-blank one, making compression output more predictable and information-dense.
 
-#### Preamble（角色设定）— 两版一致
+#### Preamble (Role Setting) — Consistent across both versions
 
 ```text
 You are a summarization agent creating a context checkpoint.
@@ -269,54 +266,54 @@ only output the structured summary.
 Do NOT include any preamble, greeting, or prefix.
 ```
 
-灵感来源：OpenCode 的 "do not respond to any questions" + Codex 的 "another language model" 框架。两版未改动。
+Inspired by OpenCode's "do not respond to any questions" + Codex's "another language model" framework. Unchanged in both versions.
 
-#### 迭代更新
+#### Iterative Update
 
-当已有旧摘要时，Prompt 变为：
+When an old summary already exists, the prompt becomes:
 
 ```text
-PREVIOUS SUMMARY: [旧摘要]
-NEW TURNS TO INCORPORATE: [新轮次]
+PREVIOUS SUMMARY: [Old Summary]
+NEW TURNS TO INCORPORATE: [New Turns]
 
-更新摘要,保留所有仍有用的旧信息。
-ADD 新的 completed actions 到编号列表(继续编号)。
-把 "In Progress" 移到 "Completed Actions"(完成时)。
-把已答问题移到 "Resolved Questions"。
-更新 "Active State" 反映当前状态。
-仅在明显过时时才移除信息。
+Update the summary, retaining all useful old information.
+ADD new completed actions to the numbered list (continue numbering).
+Move "In Progress" to "Completed Actions" (when completed).
+Move answered questions to "Resolved Questions".
+Update "Active State" to reflect the current state.
+Remove information only if it is clearly obsolete.
 ```
 
-### 6. 自适应失败冷却机制
+### 6. Adaptive Failure Cooldown Mechanism
 
 ```python
-_SUMMARY_FAILURE_COOLDOWN_SECONDS = 600   # 10 分钟,用于无 provider
-_TRANSIENT_COOLDOWN_SECONDS      = 60    # 1 分钟,用于瞬态错误
+_SUMMARY_FAILURE_COOLDOWN_SECONDS = 600   # 10 minutes, for no provider
+_TRANSIENT_COOLDOWN_SECONDS      = 60    # 1 minute, for transient errors
 
 def _generate_summary(self, turns):
     if time.monotonic() < self._summary_failure_cooldown_until:
-        return None  # 冷却期内跳过
+        return None  # Skip during cooldown
 
     try:
         response = call_llm(task="compression", ...)
-        self._summary_failure_cooldown_until = 0.0  # 成功则重置
+        self._summary_failure_cooldown_until = 0.0  # Reset on success
     except RuntimeError:
-        # 无 provider 配置 — 10 分钟内不会自己恢复
+        # No provider configured — won't recover by itself for 10 minutes
         self._summary_failure_cooldown_until = time.monotonic() + 600
     except Exception:
-        # 瞬态错误(超时/限流/网络) — 短冷却快速重试
+        # Transient error (timeout/rate limit/network) — short cooldown for quick retry
         self._summary_failure_cooldown_until = time.monotonic() + 60
 ```
 
-**设计考量**(2026-04-14 改进):区分两类失败,`RuntimeError` 表示配置问题走 10 分钟长冷却,其他异常默认是瞬态问题走 60 秒短冷却,让压缩能更快从短暂故障中恢复。
+**Design Considerations** (2026-04-14 Improvement): Distinguishes between two types of failures. `RuntimeError` indicates a configuration issue, triggering a 10-minute long cooldown. Other exceptions are assumed to be transient, triggering a 60-second short cooldown, allowing compression to recover faster from temporary glitches.
 
-### 6b. 反颠簸保护（Anti-Thrashing，2026-04-14）
+### 6b. Anti-Thrashing Protection (2026-04-14)
 
 ```python
 def should_compress(self, prompt_tokens=None) -> bool:
     if tokens < self.threshold_tokens:
         return False
-    # 连续 2 次压缩节省 <10%,跳过本次
+    # Skip if last 2 compressions saved <10% each
     if self._ineffective_compression_count >= 2:
         logger.warning(
             "Compression skipped — last %d compressions saved <10%% each. "
@@ -326,192 +323,192 @@ def should_compress(self, prompt_tokens=None) -> bool:
     return True
 ```
 
-每次压缩后根据 `saved_estimate / display_tokens` 计算实际节省百分比:
-- `>= 10%` → 重置 `_ineffective_compression_count = 0`
+After each compression, the actual percentage saved is calculated based on `saved_estimate / display_tokens`:
+- `>= 10%` → Reset `_ineffective_compression_count = 0`
 - `< 10%`  → `_ineffective_compression_count += 1`
 
-**解决的问题**:某些场景下(尾部 + 头部 + 摘要本身已经很大)压缩只能挤出 1-2 条消息,每轮都触发但几乎没用,形成压缩抖动循环。连续两次都无效就放弃,提示用户 `/new` 或 `/compress <topic>` 手动处理。
+**Problem Solved**: In some scenarios (when the tail + head + summary itself are already large), compression might only squeeze out 1-2 messages, triggering every turn but yielding almost no benefit, creating a compression thrashing loop. If two consecutive compressions are ineffective, it gives up and prompts the user to `/new` or `/compress <topic>` for manual intervention.
 
-### 7. 工具调用对完整性保障
+### 7. Tool Call Pair Integrity Guarantee
 
 ```python
 def _sanitize_tool_pairs(messages):
     """
-    修复压缩后孤儿 tool_call / tool_result 对:
+    Fixes orphaned tool_call / tool_result pairs after compression:
     
-    故障模式 1: 工具结果引用的 call_id 对应的 assistant tool_call 被移除
-    → API 报错 "No tool call found for function call output..."
-    → 解决: 删除孤儿结果
+    Failure Mode 1: The assistant's tool_call referenced by a tool result's call_id is removed
+    → API error "No tool call found for function call output..."
+    → Solution: Delete the orphaned result
     
-    故障模式 2: assistant 有 tool_calls 但对应的结果被丢弃
-    → API 报错 "every tool_call must be followed by a tool result..."
-    → 解决: 插入存根结果 "[Result from earlier conversation]"
+    Failure Mode 2: The assistant has tool_calls but their corresponding results are discarded
+    → API error "every tool_call must be followed by a tool result..."
+    → Solution: Insert a stub result "[Result from earlier conversation]"
     """
 ```
 
-**重要性**：不修复会导致 API 拒绝整个消息列表，压缩失败。
+**Importance**: Failure to fix this would lead to the API rejecting the entire message list, causing compression to fail.
 
-### 8. 边界对齐
+### 8. Boundary Alignment
 
 ```python
 def _align_boundary_forward(messages, idx):
-    """如果边界落在 tool result 上，向前推到非工具消息"""
+    """If the boundary falls on a tool result, push it forward to a non-tool message"""
 
 def _align_boundary_backward(messages, idx):
-    """如果边界落在 tool call/result 组中间，向后拉回完整包含该组"""
+    """If the boundary falls in the middle of a tool call/result group, pull it back to fully include the group"""
 ```
 
-**防止数据丢失**：避免拆分 assistant + tool_results 组，否则 `_sanitize_tool_pairs` 会移除尾部孤儿结果导致静默数据丢失。
+**Preventing Data Loss**: Avoid splitting assistant + tool_results groups; otherwise, `_sanitize_tool_pairs` would remove orphaned tail results, leading to silent data loss.
 
-**v0.10.0 修复**：新增 `_ensure_last_user_message_in_tail()` 方法，在 `_find_tail_cut_by_tokens` 末尾调用，确保**最后一条用户消息永远留在尾部**。之前在某些场景下，压缩会把用户的活跃任务指令压进摘要区域，导致 agent 丢失当前任务上下文、停滞或重复已完成的工作（#10896）。
+**v0.10.0 Fix**: Added `_ensure_last_user_message_in_tail()` method, called at the end of `_find_tail_cut_by_tokens`, to ensure that the **last user message always remains in the tail**. Previously, in some scenarios, compression would push the user's active task instruction into the summary area, causing the agent to lose its current task context, stall, or repeat already completed work (#10896).
 
-### 9. 尾部 token 预算保护
+### 9. Tail Token Budget Protection
 
 ```python
 def _find_tail_cut_by_tokens(messages, head_end, token_budget):
-    # 硬底线：至少保护 3 条尾部消息
+    # Hard minimum: at least protect 3 tail messages
     min_tail = min(3, n - head_end - 1)
     
-    # 软上限：允许预算 1.5 倍超额，避免在超大消息中间切割
+    # Soft ceiling: allow 1.5x budget overage, to avoid cutting in middle of very large message
     soft_ceiling = int(token_budget * 1.5)
     
-    # 从末尾向前累加，直到超过 soft_ceiling 且已满足 min_tail
-    # 如果预算不足以覆盖 min_tail → 回退到 n - min_tail（强制保护 3 条）
-    # 如果预算覆盖全部 → 强制在 head 之后切割，确保压缩仍执行
+    # Accumulate backwards from the end, until soft_ceiling is exceeded AND min_tail is met
+    # If budget is insufficient to cover min_tail → Fallback to n - min_tail (force protect 3 messages)
+    # If budget covers all → Force cut after head, ensuring compression still executes
 ```
 
-关键变化（2026-04-09）：从固定消息数保护改为 **token 预算 + 硬底线 min_tail=3**，对长消息和短消息都更合理。
+Key change (2026-04-09): Switched from fixed number of messages to **token budget + hard minimum `min_tail=3`**, which is more reasonable for both long and short messages.
 
-### 10. 摘要角色选择
+### 10. Summary Role Selection
 
 ```python
-# 摘要消息插入时，选择合适的 role 避免连续同角色
+# When inserting summary message, choose appropriate role to avoid consecutive same roles
 if last_head_role in ("assistant", "tool"):
     summary_role = "user"
 else:
     summary_role = "assistant"
 
-# 如果选择的角色与尾部冲突，尝试翻转
-# 如果两种角色都会造成冲突 → 合并到第一条尾部消息中
+# If the chosen role conflicts with the tail, attempt to flip
+# If both roles cause conflict → Merge into the first tail message
 ```
 
-## 上下文管理全景
+## Context Management Overview
 
-### 无限轮对话
+### Infinite Turn Conversations
 
-Hermes **不限制对话轮数**。没有 `max_history`、没有固定轮数截断。全部对话历史保留在内存中，靠压缩器循环压缩维持：
+Hermes **does not limit the number of conversation turns**. There is no `max_history` or fixed turn truncation. The entire conversation history is retained in memory, with the compressor continuously compressing it:
 
 ```text
-对话开始 → 消息累积 → 达到上下文窗口 50% → 自动压缩
-                                              │
-                                        修剪 + 摘要 + 重组
-                                              │
-                                        继续累积 → 再次达到 50% → 再次压缩 → ...
+Conversation starts → Messages accumulate → 50% context window reached → Automatic compression
+                                                                        │
+                                                                  Pruning + Summarization + Reassembly
+                                                                        │
+                                                             Continue accumulation → 50% reached again → Compress again → ...
 ```
 
-理论上可以无限对话。每次压缩生成迭代更新的摘要，不是从头重新摘要。
+Theoretically, conversations can be infinite. Each compression generates an iteratively updated summary, not a complete re-summarization from scratch.
 
-### Session 分裂
+### Session Splitting
 
-压缩时会**拆分 session**，目的是保留完整原始消息供 `session_search` 日后检索。
+During compression, the **session is split** to preserve complete original messages for future retrieval via `session_search`.
 
 ```text
-压缩前:
-  session "abc" (DB 中已有 msg 0-49 完整原始消息)
-  内存中 msg 2-40 即将被压缩成摘要
+Before compression:
+  session "abc" (DB already has msg 0-49 complete original messages)
+  In-memory msg 2-40 are about to be compressed into a summary
 
-压缩后:
-  session "abc" (结束, reason="compression")
-    → DB 中 msg 0-49 完整保留 ← session_search 可搜到原始内容
+After compression:
+  session "abc" (ended, reason="compression")
+    → DB retains complete msg 0-49 ← session_search can find original content
 
-  session "abc-2" (新建, parent_session_id="abc")
-    → 摘要 + 尾部消息 + 后续新消息
-    → _last_flushed_db_idx 重置为 0
+  session "abc-2" (newly created, parent_session_id="abc")
+    → Summary + tail messages + subsequent new messages
+    → _last_flushed_db_idx reset to 0
 
-多次压缩形成链:
+Multiple compressions form a chain:
   abc → abc-2 → abc-3 → ...
-  每一段都是完整的，通过 parent_session_id 链保持血缘
+  Each segment is complete, maintaining lineage through parent_session_id
 ```
 
-**为什么不原地替换？** 如果把压缩后的消息覆盖回同一个 session，DB 里前半段是原始消息、后半段是摘要，session_search 搜到的是不一致的数据。分裂保证每个 session 片段内容完整一致。
+**Why not in-place replacement?** If compressed messages were overwritten back into the same session, the DB would have original messages in the first half and summaries in the second, leading to inconsistent data for `session_search`. Splitting ensures each session segment contains consistent, complete content.
 
-### 消息持久化机制
+### Message Persistence Mechanism
 
-消息**不是实时逐条写入 DB**，而是在退出点批量 flush：
+Messages are **not written to the DB in real-time per message**, but rather flushed in batches at exit points:
 
 ```python
 def _flush_messages_to_session_db(self, messages, conversation_history):
-    # 增量写入：从上次水位线开始，只写新增消息
+    # Incremental write: starting from the last watermark, only write new messages
     flush_from = max(start_idx, self._last_flushed_db_idx)
     for msg in messages[flush_from:]:
         db.append_message(session_id, role, content, ...)
-    self._last_flushed_db_idx = len(messages)  # 更新水位线
+    self._last_flushed_db_idx = len(messages)  # Update watermark
 ```
 
-**触发时机**（代码中 20 个调用点，覆盖所有退出路径）：
+**Trigger Timings** (20 call points in code, covering all exit paths):
 
-| 场景 | 保证 |
+| Scenario | Guarantee |
 |------|------|
-| 对话正常完成 | ✅ 写入 |
-| API 错误 max retry 耗尽 | ✅ 放弃前写入 |
-| 用户中断（Ctrl+C） | ✅ 中断前写入 |
-| Rate limit 等待中被中断 | ✅ 写入 |
-| 413/context overflow 压缩失败 | ✅ 写入 |
-| 工具执行异常 | ✅ 写入 |
-| Fallback provider 全部失败 | ✅ 写入 |
+| Conversation completes normally | ✅ Written |
+| API error max retry exhausted | ✅ Written before abandoning |
+| User interruption (Ctrl+C) | ✅ Written before interruption |
+| Interrupted during rate limit wait | ✅ Written |
+| 413/context overflow compression failure | ✅ Written |
+| Tool execution exception | ✅ Written |
+| All fallback providers fail | ✅ Written |
 
-**水位线防重复**：`_last_flushed_db_idx` 记录已写入位置。即使多个退出路径重复调用 `_persist_session()`，同一条消息不会写入两次（修复了 issue #860）。
+**Watermark Anti-Duplication**: `_last_flushed_db_idx` records the last written position. Even if multiple exit paths repeatedly call `_persist_session()`, the same message will not be written twice (fixed issue #860).
 
 ```text
-第一次 flush:  messages[0:15] → DB,  水位线 = 15
-第二次 flush:  messages[15:23] → DB, 水位线 = 23
-第三次 flush:  messages[23:23] → 跳过（无新消息）
+First flush:  messages[0:15] → DB,  watermark = 15
+Second flush: messages[15:23] → DB, watermark = 23
+Third flush:  messages[23:23] → Skipped (no new messages)
 ```
 
-## 设计优越性
+## Design Superiority
 
-### 对比丢弃旧消息
+### Comparison to Discarding Old Messages
 
-| 维度 | 丢弃旧消息 | Context Compressor |
+| Aspect | Discarding Old Messages | Context Compressor |
 |---|---|---|
-| 信息保留 | 完全丢失 | 结构化摘要保留关键信息 |
-| 连续性 |  Agent 忘记已完成的工作 | 知道进度和决策 |
-| 文件追踪 | 丢失 | 列出相关文件 |
-| 迭代更新 | 不适用 | 摘要可迭代更新 |
-| 用户体验 | Agent 重复工作 | Agent 从摘要接续 |
+| Information Retention | Completely lost | Structured summary retains key information |
+| Continuity | Agent forgets completed work | Knows progress and decisions |
+| File Tracking | Lost | Lists relevant files |
+| Iterative Updates | Not applicable | Summary can be iteratively updated |
+| User Experience | Agent repeats work | Agent continues from summary |
 
-### 成本效益
+### Cost-Effectiveness
 
-压缩使用**辅助 LLM**（廉价模型，如 Gemini 3 Flash），而非主对话模型。典型场景：
-- 辅助模型成本：$0.01-0.05/次压缩
-- 避免的重复工作成本：远超压缩成本
-- 上下文节省：30-70%
+Compression uses an **auxiliary LLM** (cheaper model, e.g., Gemini 3 Flash), not the main dialogue model. Typical scenario:
+- Auxiliary model cost: $0.01-0.05/compression
+- Avoided cost of repetitive work: Far exceeds compression cost
+- Context saving: 30-70%
 
-## 配置与操作
+## Configuration and Operation
 
-### 配置参数
+### Configuration Parameters
 
 ```yaml
 # config.yaml
 compression:
-  summary_provider: auto      # 或 openrouter, nous, custom
-  summary_model: ""           # 空=自动选择
-  threshold_percent: 0.50     # 50% 上下文使用时触发
+  summary_provider: auto      # Or openrouter, nous, custom
+  summary_model: ""           # Empty = auto-select
+  threshold_percent: 0.50     # Trigger at 50% context usage
 ```
 
-### 环境变量
+### Environment Variables
 
 ```bash
-# 为压缩任务设置特定模型
+# Set specific model for compression tasks
 export AUXILIARY_COMPRESSION_MODEL=claude-haiku-4-5
 export CONTEXT_COMPRESSION_PROVIDER=openrouter
 ```
 
-### 运行时状态
+### Runtime Status
 
 ```python
 compressor.get_status()
-# 返回: {
+# Returns: {
 #   "last_prompt_tokens": 45000,
 #   "threshold_tokens": 65536,
 #   "context_length": 131072,
@@ -520,99 +517,99 @@ compressor.get_status()
 # }
 ```
 
-## 与 OpenClaw（Claude Code）压缩机制的对比
+## Comparison with OpenClaw (Claude Code) Compression Mechanism
 
-OpenClaw 的压缩实现位于 `src/agents/compaction.ts`，采用**分块摘要**策略，与 Hermes 的**三阶段预处理 + 单次摘要**形成鲜明对比。
+OpenClaw's compression implementation, located at `src/agents/compaction.ts`, adopts a **chunk-based summarization** strategy, contrasting sharply with Hermes' **three-phase preprocessing + single-pass summarization**.
 
-### 整体架构差异
+### Overall Architectural Differences
 
-| 维度 | Hermes v3 | OpenClaw |
+| Aspect | Hermes v3 | OpenClaw |
 |------|-----------|----------|
-| 整体策略 | 本地预处理 → 边界划分 → 单次 LLM 摘要 | 分块 + 多次 LLM 摘要（两条路径，见下） |
-| LLM 调用次数 | **1 次**（只对瘦身后的中间部分） | **多次**（滚动式 N 次，或并行式 N+1 次） |
-| 预处理 | MD5 去重 + Smart Collapse + 参数截断（零 token） | `stripToolResultDetails()` 去掉工具详情（轻量） |
-| 分块 | 不分块，头-中-尾三段 | 两种分块策略（见下） |
+| Overall Strategy | Local preprocessing → Boundary partitioning → Single LLM summary | Chunking + Multiple LLM summaries (two paths, see below) |
+| LLM Call Count | **1 call** (only on the slimmed intermediate section) | **Multiple calls** (N times in rolling, or N+1 times in parallel) |
+| Preprocessing | MD5 deduplication + Smart Collapse + Argument truncation (zero token cost) | `stripToolResultDetails()` removes tool details (lightweight) |
+| Chunking | No chunking, three sections: head-middle-tail | Two chunking strategies (see below) |
 
-OpenClaw 实际有两条压缩路径（`src/agents/compaction.ts`）：
+OpenClaw actually has two compression paths (`src/agents/compaction.ts`):
 
-- **`summarizeChunks`（滚动式）**：按 token 上限切块，串行处理——chunk1 摘要作为 chunk2 的 `previousSummary` 传入，逐步滚动。LLM 调用 N 次。
-- **`summarizeInStages`（并行+合并）**：`splitMessagesByTokenShare()` 切 N 块（默认 `DEFAULT_PARTS=2`），每块独立摘要，最后用 `MERGE_SUMMARIES_INSTRUCTIONS` 合并。LLM 调用 N+1 次。
+- **`summarizeChunks` (Rolling)**: Chunks by token limit, processes serially—chunk1's summary is passed as `previousSummary` to chunk2, progressively rolling. N LLM calls.
+- **`summarizeInStages` (Parallel + Merge)**: `splitMessagesByTokenShare()` splits into N chunks (default `DEFAULT_PARTS=2`), each summarized independently, then merged using `MERGE_SUMMARIES_INSTRUCTIONS`. N+1 LLM calls.
 
-### 摘要模板对比
+### Summary Template Comparison
 
-**Hermes v3（11 段）：**
+**Hermes v3 (11 Sections):**
 
 ```
-Goal / Constraints & Preferences / Completed Actions（编号+格式）/
+Goal / Constraints & Preferences / Completed Actions (numbered+formatted) /
 Active State / In Progress / Blocked / Key Decisions /
 Resolved Questions / Pending User Asks / Relevant Files /
 Remaining Work / Critical Context
 ```
 
-**OpenClaw（5 段）：**
+**OpenClaw (5 Sections):**
 
 ```
 Decisions / Open TODOs / Constraints/Rules /
 Pending user asks / Exact identifiers
 ```
 
-Hermes 模板更细致（Active State、Relevant Files、编号的 Completed Actions），OpenClaw 模板更精炼，但有 `Exact identifiers` 段显式要求保留 IDs/URLs/哈希/端口等字面值。
+Hermes' template is more detailed (Active State, Relevant Files, numbered Completed Actions), while OpenClaw's is more concise but includes an `Exact identifiers` section explicitly requiring retention of literal values like IDs/URLs/hashes/ports.
 
-### 逐项对比
+### Item-by-Item Comparison
 
-| 维度 | Hermes v3 | OpenClaw |
+| Aspect | Hermes v3 | OpenClaw |
 |------|-----------|----------|
-| 操作记录 | `Completed Actions` 编号列表 `N. ACTION target — outcome [tool: name]` | 无专门段落，融入 Decisions |
-| 运行时状态 | `Active State`（分支、测试状态、运行进程） | 无 |
-| 精确值保留 | `Critical Context` 段 | `Exact identifiers` 段（IDs/URLs/哈希/端口） |
-| 未答问题追踪 | `Pending User Asks` + `Resolved Questions`（区分已答/未答） | `Pending user asks`（只跟踪未答） |
-| 文件追踪 | `Relevant Files` 独立段落 | 无，靠 Exact identifiers 保留路径 |
-| 质量校验 | 无（信任 LLM 输出） | `auditSummaryQuality()` 检查 5 个段落，不通过重试，兜底生成骨架 |
-| 迭代更新 | "continue numbering" 接续旧摘要编号 | `previousSummary` 传入下一块 |
-| 摘要上限 | 压缩内容 × 0.2，上限 12K tokens | 硬性 16,000 字符 |
-| 防抖 | 连续 2 次 <10% → 跳过 | 6 种 skip reason 分类（`already_compacted_recently` 等） |
-| 失败处理 | RuntimeError 600s / 瞬态 60s 冷却 | 15 分钟安全超时 + 3 次重试 + 结构化兜底 |
-| 工具对修复 | `_sanitize_tool_pairs()` 补孤儿对 | `repairToolUseResultPairing()` 删孤儿 |
-| 尾部保护 | token 预算动态 + 硬底线 3 条 | `DEFAULT_RECENT_TURNS_PRESERVE=3`（上限 12） |
-| 多语言 | 无特殊处理 | "Write summary in the primary language" |
+| Action Record | `Completed Actions` numbered list `N. ACTION target — outcome [tool: name]` | No dedicated section, integrated into Decisions |
+| Runtime State | `Active State` (branch, test status, running processes) | None |
+| Exact Value Retention | `Critical Context` section | `Exact identifiers` section (IDs/URLs/hashes/ports) |
+| Unanswered Question Tracking | `Pending User Asks` + `Resolved Questions` (distinguishes answered/unanswered) | `Pending user asks` (only tracks unanswered) |
+| File Tracking | `Relevant Files` as a dedicated section | None, relies on Exact identifiers for paths |
+| Quality Validation | None (trusts LLM output) | `auditSummaryQuality()` checks 5 sections; retries if failed, falls back to a skeleton |
+| Iterative Update | "continue numbering" to append to old summary numbers | `previousSummary` passed to next chunk |
+| Summary Limit | 20% of compressed content, max 12K tokens | Hard limit of 16,000 characters |
+| Anti-Thrashing | Skip if 2 consecutive compressions save <10% | 6 types of skip reasons (`already_compacted_recently` etc.) |
+| Failure Handling | RuntimeError 600s / Transient 60s cooldown | 15-minute safety timeout + 3 retries + structured fallback |
+| Tool Pair Repair | `_sanitize_tool_pairs()` supplements orphaned pairs | `repairToolUseResultPairing()` deletes orphaned pairs |
+| Tail Protection | Dynamic token budget + hard minimum 3 messages | `DEFAULT_RECENT_TURNS_PRESERVE=3` (max 12) |
+| Multilingual | No special handling | "Write summary in the primary language" |
 
-### 各有所长
+### Respective Strengths
 
-**Hermes 优势：**
-- 本地预处理（MD5 去重 + Smart Collapse）在 LLM 之前砍掉 30-50% token，OpenClaw 没有这层
-- 单次 LLM 调用，不管对话多长只调 1 次
-- 模板更细致（11 段 vs 5 段），续接 agent 拿到的上下文更丰富
+**Hermes Advantages:**
+- Local preprocessing (MD5 deduplication + Smart Collapse) cuts 30-50% tokens before the LLM, a layer OpenClaw lacks.
+- Single LLM call, regardless of conversation length (only 1 call).
+- More detailed template (11 sections vs 5 sections), providing richer context for continuing agents.
 
-**OpenClaw 优势：**
-- 质量校验闭环（审查 → 重试 → 兜底骨架），Hermes 没有
-- 分块策略天然适应超长对话（单次 LLM 输入窗口有限，分块避免溢出）
-- `Exact identifiers` 段显式保留关键字面值
-- 跳过原因分类更细（6 种 reason），有助于调试
+**OpenClaw Advantages:**
+- Closed-loop quality validation (audit → retry → skeleton fallback), which Hermes does not have.
+- Chunking strategy inherently adapts to very long conversations (single LLM input window is limited, chunking avoids overflow).
+- `Exact identifiers` section explicitly retains key literal values.
+- More granular classification of skip reasons (6 reasons) aids debugging.
 
-## 与 Prompt Caching 的交互
+## Interaction with Prompt Caching
 
-Anthropic 的 prompt caching 对系统提示前缀最有效。压缩策略与缓存协调：
+Anthropic's prompt caching is most effective with system prompt prefixes. The compression strategy coordinates with caching:
 
-1. **保持系统提示不变** — 最大化缓存命中
-2. **只压缩对话历史** — 消息部分可变
-3. **使用相同的系统提示结构** — 缓存键稳定
+1.  **Keep system prompt unchanged** — Maximizes cache hits
+2.  **Only compress dialogue history** — The message part is variable
+3.  **Use the same system prompt structure** — Stable cache key
 
-## Agent 循环中的触发
+## Trigger in Agent Loop
 
 ```python
 while api_call_count < max_iterations and iteration_budget.remaining > 0:
-    # 检查 token 预算
+    # Check token budget
     if token_usage > threshold:
         compressed = compressor.compress(messages, current_tokens=token_usage)
         messages = [system_prompt] + [compressed] + recent_messages
 ```
 
-## 与其他系统的关系
+## Relationship with Other Systems
 
-- [[auxiliary-client-architecture]] — 压缩通过 `call_llm(task="compression")` 调用
-- [[smart-model-routing]] — 使用 get_model_context_length() 获取上下文窗口
-- [[prompt-builder-architecture]] — 压缩后的消息传给 prompt builder 重建提示
-- [[prompt-caching-optimization]] — 压缩策略与 prompt caching 协调
-- [[large-tool-result-handling]] — 工具输出修剪与大型结果处理理念相通
-- [[session-search-and-sessiondb]] — Session 分裂后原始消息保留在 DB 中供检索
-- [[memory-system-architecture]] — 压缩前 flush_memories 和 on_pre_compress 通知
+- [[auxiliary-client-architecture]] — Compression calls via `call_llm(task="compression")`
+- [[smart-model-routing]] — Uses `get_model_context_length()` to obtain context window
+- [[prompt-builder-architecture]] — Compressed messages passed to prompt builder to reconstruct the prompt
+- [[prompt-caching-optimization]] — Compression strategy coordinates with prompt caching
+- [[large-tool-result-handling]] — Tool output pruning shares common principles with large result handling
+- [[session-search-and-sessiondb]] — Original messages retained in DB for retrieval after session splitting
+- [[memory-system-architecture]] — `flush_memories` and `on_pre_compress` notifications before compression

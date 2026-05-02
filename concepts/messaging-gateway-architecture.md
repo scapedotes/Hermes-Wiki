@@ -1,3 +1,4 @@
+```
 ---
 title: Messaging Gateway Architecture
 created: 2026-04-07
@@ -7,28 +8,28 @@ tags: [gateway, architecture, module, telegram, discord, messaging, qq, proxy]
 sources: [gateway/run.py, gateway/platforms/, hermes_cli/config.py]
 ---
 
-# 消息网关架构
+# Messaging Gateway Architecture
 
-## 概述
+## Overview
 
-Gateway 是 Hermes Agent 的**统一消息网关**，支持 14+ 消息平台，从单一进程管理所有平台的连接和消息分发。
+Gateway is the **unified messaging gateway** for Hermes Agent, supporting 14+ messaging platforms and managing connections and message distribution for all platforms from a single process.
 
-## 架构
+## Architecture
 
 ```
 gateway/
-├── run.py              # 主循环、斜杠命令、消息分发
-├── session.py          # SessionStore — 对话持久化
-├── delivery.py         # 消息投递
-├── config.py           # 网关配置
-├── hooks.py            # 钩子系统
-├── pairing.py          # DM 配对
-├── status.py           # 状态管理
-├── mirror.py           # 跨平台镜像
-├── sticker_cache.py    # 贴纸缓存
-├── stream_consumer.py  # 流式消费
-├── channel_directory.py # 频道目录
-└── platforms/          # 平台适配器
+├── run.py              # Main loop, slash commands, message distribution
+├── session.py          # SessionStore — Session persistence
+├── delivery.py         # Message delivery
+├── config.py           # Gateway configuration
+├── hooks.py            # Hook system
+├── pairing.py          # DM pairing
+├── status.py           # Status management
+├── mirror.py           # Cross-platform mirroring
+├── sticker_cache.py    # Sticker cache
+├── stream_consumer.py  # Stream consumption
+├── channel_directory.py # Channel directory
+└── platforms/          # Platform adapters
     ├── telegram.py
     ├── telegram_network.py
     ├── discord.py
@@ -50,36 +51,36 @@ gateway/
     └── base.py
 ```
 
-## 平台支持
+## Platform Support
 
-| 平台 | 类型 | 特性 |
-|------|------|------|
-| Telegram | Bot API | 群组/私聊、语音转录、贴纸、代理支持、链接预览控制 |
-| Discord | Bot API | 服务器/私聊、语音频道、Slash Commands、角色权限控制、channel_prompts |
-| Slack | Bot API | Workspace 集成、Thread 支持 |
-| WhatsApp | Bridge (Node.js) | 群组/私聊、允许列表 |
-| Signal | Bot API | 加密消息，原生格式化、reply 引用、reactions（v2026.4.23+） |
-| Email | IMAP/SMTP | 邮件交互 |
-| SMS | Twilio | 短信，字符限制 |
-| Home Assistant | WebSocket | 智能家居事件 |
-| Matrix | E2E 加密 | 去中心化消息 |
-| Mattermost | Bot API | 自托管团队消息 |
-| 钉钉 | Stream | 企业消息，QR 扫码认证，require_mention + allowed_users 权限控制 |
-| 飞书/Lark | Stream | 企业消息 |
-| 企业微信 | Stream | 企业微信消息 |
-| BlueBubbles | REST + Webhook | iMessage（macOS），tapback、已读回执 |
-| 微信/WeChat | iLink Bot API | 长轮询收消息，AES-128-ECB 媒体加密，QR 登录 |
-| QQ Bot | Official API v2 | WebSocket 入站(C2C/群/频道/DM) + REST 出站,语音转录(腾讯 ASR),allowlist + DM 配对 |
-| Webhook | HTTP | 外部事件接收 |
-| **腾讯元宝 Yuanbao** | API | 原生文本+媒体投递，sticker 支持（v2026.4.23+） |
-| **IRC**（插件） | TLS asyncio | 零外部依赖，TLS、PING/PONG、nick collision、NickServ、频道寻址（v2026.4.23+，参考实现） |
+| Platform | Type | Features |
+|---|---|---|
+| Telegram | Bot API | Groups/DMs, Voice Transcription, Stickers, Proxy Support, Link Preview Control |
+| Discord | Bot API | Servers/DMs, Voice Channels, Slash Commands, Role-based Access Control, channel_prompts |
+| Slack | Bot API | Workspace Integration, Thread Support |
+| WhatsApp | Bridge (Node.js) | Groups/DMs, Allowlist |
+| Signal | Bot API | Encrypted Messages, Native Formatting, Reply Quotes, Reactions (v2026.4.23+) |
+| Email | IMAP/SMTP | Email Interaction |
+| SMS | Twilio | SMS, Character Limits |
+| Home Assistant | WebSocket | Smart Home Events |
+| Matrix | E2E Encryption | Decentralized Messaging |
+| Mattermost | Bot API | Self-hosted Team Messaging |
+| DingTalk | Stream | Enterprise Messaging, QR Code Authentication, require_mention + allowed_users Access Control |
+| Feishu/Lark | Stream | Enterprise Messaging |
+| WeCom | Stream | WeCom Messaging |
+| BlueBubbles | REST + Webhook | iMessage (macOS), Tapbacks, Read Receipts |
+| WeChat | iLink Bot API | Long Polling for Messages, AES-128-ECB Media Encryption, QR Login |
+| QQ Bot | Official API v2 | WebSocket Inbound (C2C/Groups/Channels/DMs) + REST Outbound, Voice Transcription (Tencent ASR), Allowlist + DM Pairing |
+| Webhook | HTTP | External Event Reception |
+| **Tencent Yuanbao** | API | Native Text + Media Delivery, Sticker Support (v2026.4.23+) |
+| **IRC** (Plugin) | TLS asyncio | Zero External Dependencies, TLS, PING/PONG, Nick Collision, NickServ, Channel Addressing (v2026.4.23+, Reference Implementation) |
 
-## 平台适配器插件化（v2026.4.23+）
+## Pluggable Platform Adapters (v2026.4.23+)
 
-`gateway/platform_registry.py` 引入 `PlatformRegistry` 单例 + `PlatformEntry` dataclass，让任何人都可以把新平台（IRC、Viber、Line 等）以**纯插件**形式接入，无需改 gateway 核心代码。
+`gateway/platform_registry.py` introduces the `PlatformRegistry` singleton and `PlatformEntry` dataclass, allowing anyone to integrate new platforms (e.g., IRC, Viber, Line) as **pure plugins** without modifying the gateway's core code.
 
 ```python
-# 插件注册入口
+# Plugin registration entry point
 def register(ctx):
     ctx.register_platform(
         name="irc",
@@ -92,37 +93,37 @@ def register(ctx):
     )
 ```
 
-### 关键改造点
+### Key Changes
 
-| 模块 | 改造 |
-|------|------|
-| `Platform` enum | `_missing_()` 接受未知字符串，创建缓存的 pseudo-member（`Platform('irc') is Platform('irc')` 永真） |
-| `GatewayConfig.from_dict` | 解析 config.yaml 里的插件平台名，不再拒绝未知平台 |
-| `_create_adapter()` in `gateway/run.py` | 先查 registry，未命中再 fall through 到内置 if/elif 链 |
-| `get_connected_platforms()` | 把未知平台委托给 registry |
-| `PluginContext.register_platform()` | 镜像 `register_tool()` / `register_hook()` 模式 |
+| Module | Change |
+|---|---|
+| `Platform` enum | `_missing_()` accepts unknown strings, creates cached pseudo-members (e.g., `Platform('irc') is Platform('irc')` is always true) |
+| `GatewayConfig.from_dict` | Parses plugin platform names from config.yaml; no longer rejects unknown platforms |
+| `_create_adapter()` in `gateway/run.py` | Checks registry first, then falls through to the built-in if/elif chain if not found |
+| `get_connected_platforms()` | Delegates unknown platforms to the registry |
+| `PluginContext.register_platform()` | Mirrors the `register_tool()` / `register_hook()` pattern |
 
-### IRC 参考实现
+### IRC Reference Implementation
 
-`plugins/platforms/irc/` 是首个插件平台：
-- 全 async（`asyncio` stdlib，零外部依赖）
-- TLS 连接、PING/PONG 心跳、nick 冲突重命名、NickServ 自动鉴权
-- 频道消息要求 `nick: msg` 寻址，DM 全部派发
-- 输出 Markdown 自动剥离（IRC 不支持），消息分片（IRC 长度限制）
-- 交互式 `setup` 向导（v2026.4.23+）
+`plugins/platforms/irc/` is the first plugin platform:
+- Fully asynchronous (`asyncio` stdlib, zero external dependencies)
+- TLS connection, PING/PONG heartbeats, nick collision renaming, NickServ automatic authentication
+- Channel messages require `nick: msg` addressing, all DMs are dispatched
+- Markdown stripping for output (IRC does not support), message fragmentation (IRC length limits)
+- Interactive `setup` wizard (v2026.4.23+)
 
-### 平台插件 12 个集成点全覆盖
+### Complete Coverage of 12 Platform Plugin Integration Points
 
-`feat: complete plugin platform parity` (2e20f6ae2) + `feat: final platform plugin parity` (e464cde58) 让插件平台和内置平台行为一致：
-- webhook 投递、PLATFORM_HINTS、`get_connected_platforms`、cron 投递、动态 toolset 生成、setup wizard 等
-- bundled 插件平台（如 IRC）启动时自动加载（`feat(plugins): bundled platform plugins auto-load by default`）
+`feat: complete plugin platform parity` (2e20f6ae2) + `feat: final platform plugin parity` (e464cde58) ensures consistent behavior between plugin platforms and built-in platforms:
+- Webhook delivery, PLATFORM_HINTS, `get_connected_platforms`, cron delivery, dynamic toolset generation, setup wizard, etc.
+- Bundled plugin platforms (e.g., IRC) are automatically loaded at startup (`feat(plugins): bundled platform plugins auto-load by default`)
 
-## 平台适配器基类
+## Platform Adapter Base Class
 
 ```python
 # gateway/platforms/base.py
 class BasePlatform:
-    """平台适配器基类"""
+    """Base class for platform adapters"""
     
     def __init__(self, config: dict, gateway):
         self.config = config
@@ -130,111 +131,111 @@ class BasePlatform:
         self.platform_name = self.__class__.__name__.lower()
     
     async def start(self):
-        """启动平台连接"""
+        """Starts the platform connection"""
         raise NotImplementedError
     
     async def stop(self):
-        """停止平台连接"""
+        """Stops the platform connection"""
         raise NotImplementedError
     
     async def send_message(self, chat_id: str, text: str, **kwargs):
-        """发送消息"""
+        """Sends a message"""
         raise NotImplementedError
     
     async def handle_message(self, event: MessageEvent):
-        """处理接收消息"""
+        """Handles incoming messages"""
         await self.gateway.process_event(event)
 ```
 
-## 消息处理流程
+## Message Processing Flow
 
 ```
-用户发送消息
+User sends message
   ↓
-平台适配器接收
+Platform adapter receives
   ↓
-创建 MessageEvent
+MessageEvent created
   ↓
 GatewayRunner.process_event(event)
   ↓
-解析斜杠命令（如果有）
+Slash command parsed (if any)
   ↓
-查找或创建 Session
+Session found or created
   ↓
-调用 AIAgent
+AIAgent invoked
   ↓
-获取响应
+Response received
   ↓
-通过平台适配器发送回复
+Reply sent via platform adapter
 ```
 
-## 会话管理
+## Session Management
 
 ```python
 # gateway/session.py
 class SessionStore:
-    """对话持久化存储"""
+    """Persistent storage for sessions"""
     
     def get_or_create_session(self, chat_id, platform):
-        """获取或创建会话"""
+        """Gets or creates a session"""
     
     def save_session(self, session_id, messages):
-        """保存会话"""
+        """Saves a session"""
     
     def get_session(self, session_id):
-        """获取会话"""
+        """Gets a session"""
 ```
 
-## 斜杠命令
+## Slash Commands
 
-与 CLI 共享的斜杠命令系统：
+Slash command system shared with the CLI:
 
-| 命令 | 描述 |
-|------|------|
-| `/new` | 新对话 |
-| `/reset` | 重置对话 |
-| `/model [provider:model]` | 切换模型 |
-| `/personality [name]` | 设置个性 |
-| `/retry` | 重试上一次 |
-| `/undo` | 撤销上一次 |
-| `/compress` | 压缩上下文 |
-| `/usage` | 检查 token 使用 |
-| `/insights [days]` | 使用洞察 |
-| `/skills` | 浏览技能 |
-| `/stop` | 中断当前工作 |
-| `/status` | 平台状态 |
-| `/sethome` | 设置主平台 |
+| Command | Description |
+|---|---|
+| `/new` | New conversation |
+| `/reset` | Reset conversation |
+| `/model [provider:model]` | Switch model |
+| `/personality [name]` | Set personality |
+| `/retry` | Retry last turn |
+| `/undo` | Undo last turn |
+| `/compress` | Compress context |
+| `/usage` | Check token usage |
+| `/insights [days]` | Usage insights |
+| `/skills` | Browse skills |
+| `/stop` | Interrupt current work |
+| `/status` | Platform status |
+| `/sethome` | Set home platform |
 
-## DM 配对
+## DM Pairing
 
-通过 `GATEWAY_ALLOWED_USERS` 环境变量控制谁可以与机器人对话：
+Controls who can converse with the bot via the `GATEWAY_ALLOWED_USERS` environment variable:
 
 ```bash
-# 允许的 Telegram 用户 ID
+# Allowed Telegram user IDs
 GATEWAY_ALLOWED_USERS=telegram:123456789,discord:987654321
 ```
 
-未授权用户发送消息时，机器人不会响应（静默忽略）。
+When unauthorized users send messages, the bot will not respond (silent ignore).
 
-## 媒体处理
+## Media Handling
 
 ```
-用户发送图片/文件
+User sends image/file
   ↓
-平台适配器下载
+Platform adapter downloads
   ↓
-保存到临时目录
+Saved to temporary directory
   ↓
-传递给 Agent（vision_analyze 或文件处理）
+Passed to Agent (vision_analyze or file processing)
   ↓
-Agent 响应包含 MEDIA: 路径
+Agent response includes MEDIA: path
   ↓
-提取本地文件
+Local file extracted
   ↓
-通过平台原生方式发送
+Sent via native platform method
 ```
 
-## 网关服务管理
+## Gateway Service Management
 
 ### Linux (systemd)
 
@@ -254,12 +255,12 @@ WantedBy=default.target
 ```
 
 ```bash
-hermes gateway start    # 启动服务
-hermes gateway stop     # 停止服务
-hermes gateway status   # 检查状态
+hermes gateway start    # Start service
+hermes gateway stop     # Stop service
+hermes gateway status   # Check status
 ```
 
-服务单元：`hermes-gateway.service` 或 `hermes-gateway-<profile>.service`
+Service unit: `hermes-gateway.service` or `hermes-gateway-<profile>.service`
 
 ### macOS (launchd)
 
@@ -284,98 +285,98 @@ hermes gateway status   # 检查状态
 ```
 
 ```bash
-hermes gateway start    # 启动 launchd 服务
-hermes gateway stop     # 停止
-hermes gateway status   # 状态
+hermes gateway start    # Start launchd service
+hermes gateway stop     # Stop
+hermes gateway status   # Status
 ```
 
-标签：`com.nousresearch.hermes-gateway`
+Label: `com.nousresearch.hermes-gateway`
 
-## 更新时自动重启
+## Automatic Restart on Update
 
-`hermes update` 命令会自动：
-1. 发现所有运行中的 gateway 服务
-2. 重启 systemd/launchd 服务
-3. 停止非服务模式的手动进程
+The `hermes update` command automatically:
+1. Discovers all running gateway services
+2. Restarts systemd/launchd services
+3. Stops manually run processes not in service mode
 
-## 平台特定功能
+## Platform-Specific Features
 
 ### Telegram
-- 支持群组和私聊
-- 群消息需要 @mention 触发
-- 语音消息转录
-- 贴纸支持
-- 话题/线程支持
-- **代理支持**（v0.10.0）：`TELEGRAM_PROXY` 环境变量或 `config.yaml` 中 `proxy_url`
-- **链接预览控制**（v0.10.0）：`config.yaml` 中 `telegram.disable_link_preview` 关闭消息链接预览
+- Supports groups and direct messages (DMs)
+- Group messages require @mention for activation
+- Voice message transcription
+- Sticker support
+- Topic/Thread support
+- **Proxy support** (v0.10.0): `TELEGRAM_PROXY` environment variable or `proxy_url` in `config.yaml`
+- **Link preview control** (v0.10.0): `telegram.disable_link_preview` in `config.yaml` to disable message link previews
 
 ### Discord
-- 支持服务器和私聊
-- 需要 @mention 或 DM
-- 语音频道支持
-- Opus 音频编码
-- Slash commands 集成
-- **角色权限控制**（v0.10.0）：`DISCORD_ALLOWED_ROLES` 环境变量，逗号分隔 Role ID。与 `DISCORD_ALLOWED_USERS` 是 OR 关系——用户 ID 或角色任一匹配即放行，两个都没配则所有人可用
-- **channel_prompts**（v0.10.0）：按频道/话题注入不同的系统提示，也扩展到 Telegram（群组/论坛话题）、Slack、Mattermost
-- **@everyone 和角色 ping 屏蔽**：`allowed_mentions` 默认阻止 bot 触发全体通知
+- Supports servers and direct messages (DMs)
+- Requires @mention or DM
+- Voice channel support
+- Opus audio encoding
+- Slash commands integration
+- **Role-based access control** (v0.10.0): `DISCORD_ALLOWED_ROLES` environment variable, comma-separated Role IDs. It's an OR relationship with `DISCORD_ALLOWED_USERS` - a match on either user ID or role grants access; if neither is configured, all users have access.
+- **channel_prompts** (v0.10.0): Inject different system prompts per channel/topic, also extended to Telegram (groups/forum topics), Slack, Mattermost.
+- **@everyone and role ping suppression**: `allowed_mentions` by default prevents the bot from triggering mass notifications.
 
-### 钉钉 DingTalk
-- Stream 协议连接
-- **QR 扫码认证**（v0.10.0）：`hermes_cli/dingtalk_auth.py`（292 行）实现 Device Flow——终端渲染 QR 码，用户用钉钉扫码，自动获取 AppKey/AppSecret，无需手动创建应用
-- **require_mention + allowed_users 权限控制**（v0.10.0）：与 Telegram/Discord 对齐
-- 支持 dingtalk-stream 0.24+ SDK 和 oapi webhooks
+### DingTalk
+- Stream protocol connection
+- **QR Code Authentication** (v0.10.0): `hermes_cli/dingtalk_auth.py` (line 292) implements the Device Flow—the terminal renders a QR code, which users scan with DingTalk to automatically obtain AppKey/AppSecret, eliminating the need for manual application creation.
+- **require_mention + allowed_users access control** (v0.10.0): Aligned with Telegram/Discord.
+- Supports dingtalk-stream 0.24+ SDK and oapi webhooks.
 
-### 微信 WeChat
-- SILK 编码语音回复（v0.10.0）
-- 媒体附件提取和发送
-- 原生 Markdown 渲染
-- CDN 白名单 SSRF 防护（安全修复）
-- macOS SSL 证书修复
+### WeChat
+- SILK-encoded voice replies (v0.10.0)
+- Media attachment extraction and sending
+- Native Markdown rendering
+- CDN whitelist for SSRF protection (security fix)
+- macOS SSL certificate fix
 
 ### WhatsApp
-- 需要 WhatsApp Bridge (Node.js)
-- 群消息需要前缀触发
-- 允许列表控制
+- Requires WhatsApp Bridge (Node.js)
+- Group messages require a prefix to trigger
+- Allowlist control
 
 ### Home Assistant
-- 智能家居事件监控
-- 设备控制
-- 自动化触发
+- Smart home event monitoring
+- Device control
+- Automation triggers
 
-### Gateway 运维增强（v0.10.0）
-- **Agent 缓存 LRU + 空闲 TTL 淘汰**：`_agent_cache` 加入上限和空闲超时，防止长期运行的 gateway 内存泄漏
-- **临时 agent 关闭**：一次性任务完成后自动关闭临时 agent
-- **WebSocket 重连等待**：发送前等待重连完成，避免丢消息
+### Gateway Operations Enhancements (v0.10.0)
+- **Agent cache LRU + idle TTL eviction**: `_agent_cache` now includes a size limit and idle timeout to prevent memory leaks in long-running gateways.
+- **Temporary agent shutdown**: Temporary agents are automatically shut down after one-time tasks are completed.
+- **WebSocket reconnection wait**: Waits for reconnection to complete before sending, preventing message loss.
 
-### v2026.4.18+ 增强
+### v2026.4.18+ Enhancements
 
-- **企业微信（WeCom）QR 扫码认证**：setup 向导（`hermes_cli/gateway.py:_setup_wecom`）通过 `gateway.platforms.wecom.qr_scan_for_bot_info` 扫码获取 bot 凭证，无需手动配置
-- **插件斜杠命令跨平台原生化**：`register_command()` 的插件命令自动暴露为 Discord native slash、Telegram BotCommand、Slack `/hermes` 子命令，无需针对每个平台重复实现
-- **决策型 command hook**：`command:<name>` 钩子可返回 `{"decision": "deny"|"handled"|"rewrite"|"allow"}` 在核心处理前拦截
-- **Slack 反应生命周期**：`SLACK_REACTIONS` 环境变量开关控制 bot 收发消息时的反应（emoji）
-- **Feishu @mention 上下文保留**：入站消息保留 @mention 上下文
-- **飞书流式编辑换行修复**：流式输出不再前置多余空行
-- **Session 状态维护**：`hermes_state.py` 新增 `maybe_auto_prune_and_vacuum()`，启动时幂等执行（跨进程通过 `state_meta` 表记录上次运行时间）。防止 session 和 FTS5 索引无限增长（一个重度用户报告 384MB/982 sessions 影响性能，prune + VACUUM 后降到 43MB）
-- **MEDIA: 标签扩展**：支持 PDF、document、archive 扩展名的自动提取
-- **全局隧道/代理场景 URL 开关**：`security.allow_private_urls` / `HERMES_ALLOW_PRIVATE_URLS` 允许解析私有 IP 范围（198.18.0.0/15、100.64.0.0/10），解决 OpenWrt / TUN 代理（Clash/Mihomo/Sing-box）/ 企业 VPN / Tailscale 场景。云元数据端点（169.254.169.254 等）始终阻断
-- **平台 hints**：`PLATFORM_HINTS` 覆盖 Matrix、Mattermost、Feishu 的系统提示
+- **WeCom QR Code Authentication**: The setup wizard (`hermes_cli/gateway.py:_setup_wecom`) obtains bot credentials via `gateway.platforms.wecom.qr_scan_for_bot_info`, eliminating manual configuration.
+- **Cross-platform native slash commands for plugins**: Plugin commands registered with `register_command()` are automatically exposed as Discord native slash commands, Telegram BotCommands, and Slack `/hermes` subcommands, removing the need for platform-specific implementations.
+- **Decision-making command hook**: The `command:<name>` hook can return `{"decision": "deny"|"handled"|"rewrite"|"allow"}` to intercept commands before core processing.
+- **Slack reaction lifecycle**: The `SLACK_REACTIONS` environment variable controls whether the bot uses reactions (emojis) when sending and receiving messages.
+- **Feishu @mention context preservation**: Incoming messages retain @mention context.
+- **Feishu streaming edit newline fix**: Streaming output no longer prepends extra blank lines.
+- **Session state maintenance**: `hermes_state.py` introduces `maybe_auto_prune_and_vacuum()`, which executes idempotently on startup (last run time recorded cross-process via `state_meta` table). This prevents indefinite growth of sessions and FTS5 indices (one heavy user reported 384MB/982 sessions impacting performance, reduced to 43MB after prune + VACUUM).
+- **MEDIA: tag extension**: Supports automatic extraction for PDF, document, and archive file extensions.
+- **Global tunnel/proxy URL toggle**: `security.allow_private_urls` / `HERMES_ALLOW_PRIVATE_URLS` allows parsing of private IP ranges (198.18.0.0/15, 100.64.0.0/10), addressing scenarios like OpenWrt / TUN proxies (Clash/Mihomo/Sing-box) / Enterprise VPN / Tailscale. Cloud metadata endpoints (169.254.169.254, etc.) are always blocked.
+- **Platform hints**: `PLATFORM_HINTS` overrides system prompts for Matrix, Mattermost, Feishu.
 
-### 与其他 Agent 框架对比
+### Comparison with Other Agent Frameworks
 
-| 特性 | Hermes | OpenClaw | Claude |
-|------|--------|----------|--------|
-| 平台数量 | 14+ | 14+ | 1 |
-| 统一网关 | 单一进程 | 支持 | N/A |
-| 会话共享 | 跨平台 | 支持 | N/A |
-| 语音转录 | Telegram/Discord | 支持 | N/A |
-| 群组支持 | 多平台 | 支持 | N/A |
-| 服务管理 | systemd/launchd | 支持 | N/A |
+| Feature | Hermes | OpenClaw | Claude |
+|---|---|---|---|
+| Number of Platforms | 14+ | 14+ | 1 |
+| Unified Gateway | Single Process | Supported | N/A |
+| Session Sharing | Cross-Platform | Supported | N/A |
+| Voice Transcription | Telegram/Discord | Supported | N/A |
+| Group Support | Multi-Platform | Supported | N/A |
+| Service Management | systemd/launchd | Supported | N/A |
 
-## Gateway Proxy Mode（薄中继模式，2026-04-14）
+## Gateway Proxy Mode (Thin Relay Mode, 2026-04-14)
 
-通常 Gateway 和 Agent 跑在同一进程:Gateway 接收消息 → 直接调用 `AIAgent.run_conversation()`。**Proxy mode** 把两者分开——Gateway 只做平台 I/O(加密、分片、媒体),所有 Agent 工作转发给远程 Hermes API server。
+Typically, Gateway and Agent run in the same process: Gateway receives messages → directly calls `AIAgent.run_conversation()`. **Proxy mode** separates the two—Gateway only handles platform I/O (encryption, fragmentation, media), while all Agent work is forwarded to a remote Hermes API server.
 
-### 典型用途
+### Typical Use Case
 
 ```
 [Matrix/Discord/...]  ←→  [Gateway (Linux Docker, E2EE keys)]
@@ -384,76 +385,79 @@ hermes gateway status   # 状态
                               [Hermes API server (macOS host)]
                                     │
                                     ↓
-                     本地文件、memory、skills、统一 session store
+                     Local files, memory, skills, unified session store
 ```
 
-**解决的问题**:想用 Matrix E2EE,但 E2EE 需要持久化加密密钥,跑在 Docker 里比较稳定;而 agent 本身想跑在 macOS 主机上访问本地文件/技能/记忆。原来这俩得二选一,proxy mode 把它们串起来。
+### Problem Solved
 
-### 启用方式
+Desire to use Matrix E2EE, but E2EE requires persistent encryption keys, which are more stable when run in Docker. The agent itself, however, needs to run on a macOS host to access local files/skills/memory. Previously, it was an either/or choice; proxy mode connects them.
+
+### Activation
 
 ```yaml
-# ~/.hermes/config.yaml — 配置优先
+# ~/.hermes/config.yaml — Configuration priority
 gateway:
   proxy_url: "http://host.docker.internal:8080"
 ```
 
-或环境变量(Docker 友好,不用挂 config):
+Or environment variables (Docker-friendly, no config mounting needed):
 
 ```bash
 GATEWAY_PROXY_URL=http://host.docker.internal:8080
 GATEWAY_PROXY_KEY=<matches upstream API_SERVER_KEY>
 ```
 
-### 实现位置
+### Implementation Details
 
-`gateway/run.py:7709` 起:
-- `_get_proxy_url()` — 先查 env var 再查 config.yaml
-- `_run_agent_via_proxy()` — HTTP + SSE streaming 转发,解析流式响应
-- `_run_agent()` — 检测到 proxy_url 就走 proxy 路径,否则走本地 agent
-- `GatewayStreamConsumer` 照常工作,流式分片仍然在 Gateway 侧完成
+Starting from `gateway/run.py:7709`:
+- `_get_proxy_url()` — Checks env var first, then config.yaml
+- `_run_agent_via_proxy()` — HTTP + SSE streaming forwarding, parses streaming responses
+- `_run_agent()` — If `proxy_url` is detected, takes the proxy path; otherwise, uses the local agent
+- `GatewayStreamConsumer` operates as usual; streaming fragmentation is still handled on the Gateway side
 
-### 关键特性
+### Key Features
 
-| 机制 | 说明 |
+| Mechanism | Description |
 |---|---|
-| `X-Hermes-Session-Id` header | 携带 session id 保证跨请求 session 连续 |
-| `GATEWAY_PROXY_KEY` | 和远端 `API_SERVER_KEY` 匹配,走 Bearer 鉴权 |
-| SSE streaming | 响应按 chunk 过来,Gateway 流式发送到平台 |
-| 错误兼容 | 返回的 result dict 结构与本地 agent 一致,session store 照常记录 |
-| 平台无关 | 不只是 Matrix,任何平台 adapter 都能走 proxy 模式 |
+| `X-Hermes-Session-Id` header | Carries session ID to ensure session continuity across requests |
+| `GATEWAY_PROXY_KEY` | Matches remote `API_SERVER_KEY`, uses Bearer authentication |
+| SSE streaming | Responses arrive in chunks, Gateway streams them to the platform |
+| Error compatibility | Returned result dict structure matches local agent, session store records as usual |
+| Platform agnostic | Not just Matrix, any platform adapter can use proxy mode |
 
-### 调用链
+### Call Chain
 
 ```
-用户在 Matrix 发消息
-    ↓ E2EE 解密 (Gateway 侧)
+User sends message in Matrix
+    ↓ E2EE decryption (Gateway side)
 gateway.process_event()
     ↓
-_run_agent() → 检测到 proxy_url
+_run_agent() → proxy_url detected
     ↓
 _run_agent_via_proxy():
     POST {proxy_url}/v1/chat/completions
       + X-Hermes-Session-Id: <sid>
       + Authorization: Bearer <GATEWAY_PROXY_KEY>
       + body: { messages: [...], stream: true }
-    ↓ SSE stream 到达
-    逐 chunk 通过 GatewayStreamConsumer 转发到平台
-    ↓ E2EE 加密 (Gateway 侧)
-发送回用户
+    ↓ SSE stream arrives
+    Each chunk forwarded to platform via GatewayStreamConsumer
+    ↓ E2EE encryption (Gateway side)
+Sent back to user
 ```
 
-## 相关页面
+## Related Pages
 
-- [[gateway-session-management]] — 网关会话管理架构
-- [[cron-scheduling]] — Cron 调度器由网关驱动
-- [[hook-system-architecture]] — 网关事件钩子系统
+- [[gateway-session-management]] — Gateway Session Management Architecture
+- [[cron-scheduling]] — Cron Scheduler Driven by Gateway
+- [[hook-system-architecture]] — Gateway Event Hook System
 
-## 相关文件
+## Related Files
 
-- `gateway/run.py` — 主循环和消息分发
+- `gateway/run.py` — Main Loop and Message Distribution
 - `gateway/session.py` — SessionStore
-- `gateway/platforms/base.py` — 平台基类
-- `gateway/delivery.py` — 消息投递
-- `gateway/config.py` — 网关配置
-- `gateway/platforms/` — 平台适配器目录
-- `hermes_cli/gateway.py` — Gateway CLI 命令
+- `gateway/platforms/base.py` — Platform Base Class
+- `gateway/delivery.py` — Message Delivery
+- `gateway/config.py` — Gateway Configuration
+- `gateway/platforms/` — Platform Adapters Directory
+- `hermes_cli/gateway.py` — Gateway CLI Commands
+```

@@ -1,5 +1,5 @@
 ---
-title: 中断传播与容错机制
+title: Interrupt Propagation and Fault Tolerance Mechanisms
 created: 2026-04-07
 updated: 2026-04-15
 type: concept
@@ -7,20 +7,20 @@ tags: [architecture, reliability, fault-tolerance, interrupt]
 sources: [run_agent.py, gateway/run.py, agent/error_classifier.py, tools/credential_pool.py]
 ---
 
-# 中断传播与容错机制
+# Interrupt Propagation and Fault Tolerance Mechanisms
 
-## 设计原理
+## Design Principles
 
-Agent 可能执行长时间运行的任务（多次工具调用、子代理委派）。用户需要能够：
-1. **中断当前操作** — 发送新消息或按 Ctrl+C
-2. **优雅处理失败** — API 错误、网络断开、凭证过期
-3. **自动恢复** — 重试、回退、凭证轮换
+Agents may execute long-running tasks (multiple tool calls, sub-agent delegation). Users need to be able to:
+1. **Interrupt current operations** — by sending a new message or pressing Ctrl+C
+2. **Gracefully handle failures** — API errors, network disconnections, expired credentials
+3. **Automatically recover** — retry, fallback, credential rotation
 
-Hermes 实现了**多层中断和容错机制**。
+Hermes implements a **multi-layered interrupt and fault tolerance mechanism**.
 
-## 中断机制
+## Interrupt Mechanism
 
-### 中断标志
+### Interrupt Flag
 
 ```python
 class AIAgent:
@@ -30,30 +30,30 @@ class AIAgent:
     
     @property
     def is_interrupted(self) -> bool:
-        """检查是否请求了中断"""
+        """Checks if an interrupt has been requested."""
         return self._interrupt_requested
     
     def clear_interrupt(self):
-        """清除中断状态"""
+        """Clears the interrupt state."""
         self._interrupt_requested = False
         self._interrupt_message = None
 ```
 
-### 中断传播到子代理
+### Interrupt Propagation to Sub-agents
 
 ```python
-# 父代理可以中断所有子代理
+# Parent agent can interrupt all child agents
 def _propagate_interrupt(self):
     with self._active_children_lock:
         for child in self._active_children:
             child._interrupt_requested = True
 ```
 
-### API 调用中断
+### API Call Interruption
 
 ```python
 def _interruptible_api_call(self, api_kwargs: dict):
-    """在后台线程中运行 API 调用，使主循环可以检测中断"""
+    """Runs the API call in a background thread, allowing the main loop to detect interrupts."""
     
     result = {"response": None, "error": None}
     request_client_holder = {"client": None}
@@ -71,7 +71,7 @@ def _interruptible_api_call(self, api_kwargs: dict):
         except Exception as e:
             result["error"] = e
         finally:
-            # 清理请求客户端
+            # Clean up the request client
             request_client = request_client_holder.get("client")
             if request_client is not None:
                 self._close_request_openai_client(request_client, reason="request_complete")
@@ -80,9 +80,9 @@ def _interruptible_api_call(self, api_kwargs: dict):
     t.start()
     
     while t.is_alive():
-        t.join(timeout=0.3)  # 每 300ms 检查一次中断
+        t.join(timeout=0.3)  # Check for interrupt every 300ms
         if self._interrupt_requested:
-            # 强制关闭进行中的 HTTP 连接
+            # Force close ongoing HTTP connections
             try:
                 if self.api_mode == "anthropic_messages":
                     self._anthropic_client.close()
@@ -100,51 +100,51 @@ def _interruptible_api_call(self, api_kwargs: dict):
     return result["response"]
 ```
 
-### 主循环中断检查
+### Main Loop Interrupt Check
 
 ```python
 while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
-    # 检查中断请求
+    # Check for interrupt request
     if self._interrupt_requested:
         interrupted = True
         if not self.quiet_mode:
             self._safe_print("⚠️ Interrupted by user")
         break
     
-    # ... 正常处理
+    # ... Normal processing
 ```
 
-### 流式 API 调用中断
+### Streaming API Call Interruption
 
 ```python
 def _interruptible_streaming_api_call(self, api_kwargs: dict, ...):
-    """流式变体，支持实时 token 投递"""
+    """Streaming variant, supports real-time token delivery."""
     
     for chunk in stream:
         if self._interrupt_requested:
-            break  # 停止接收流
+            break  # Stop receiving stream
         
-        # ... 处理 chunk
+        # ... Process chunk
     
-    # 清理
+    # Cleanup
     if self._interrupt_requested:
         raise InterruptedError("Agent interrupted during streaming")
 ```
 
-## 容错机制
+## Fault Tolerance Mechanism
 
-### 凭证池轮换
+### Credential Pool Rotation
 
 ```python
 def _recover_with_credential_pool(self, *, status_code, has_retried_429, ...):
-    """通过凭证池轮换尝试恢复"""
+    """Attempts to recover by rotating through the credential pool."""
     
     pool = self._credential_pool
     if pool is None or status_code is None:
         return False, has_retried_429
     
     if status_code == 402:
-        # 账单耗尽 — 立即轮换
+        # Billing exhausted — rotate immediately
         next_entry = pool.mark_exhausted_and_rotate(status_code=402, ...)
         if next_entry is not None:
             self._swap_credential(next_entry)
@@ -152,20 +152,20 @@ def _recover_with_credential_pool(self, *, status_code, has_retried_429, ...):
     
     if status_code == 429:
         if not has_retried_429:
-            return False, True  # 第一次 429，重试相同凭证
-        # 第二次 429，轮换到下一个凭证
+            return False, True  # First 429, retry with the same credential
+        # Second 429, rotate to the next credential
         next_entry = pool.mark_exhausted_and_rotate(status_code=429, ...)
         if next_entry is not None:
             self._swap_credential(next_entry)
             return True, False
     
     if status_code == 401:
-        # 尝试刷新当前凭证
+        # Attempt to refresh current credential
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
             self._swap_credential(refreshed)
             return True, has_retried_429
-        # 刷新失败 — 轮换到下一个凭证
+        # Refresh failed — rotate to the next credential
         next_entry = pool.mark_exhausted_and_rotate(status_code=401, ...)
         if next_entry is not None:
             self._swap_credential(next_entry)
@@ -174,10 +174,10 @@ def _recover_with_credential_pool(self, *, status_code, has_retried_429, ...):
     return False, has_retried_429
 ```
 
-### Fallback 模型链
+### Fallback Model Chain
 
 ```python
-# 配置示例
+# Configuration example
 fallback_chain:
   - model: "anthropic/claude-opus-4.6"
     provider: "anthropic"
@@ -187,39 +187,39 @@ fallback_chain:
     provider: "openrouter"
 
 def _try_activate_fallback(self):
-    """激活下一个 fallback 模型"""
+    """Activates the next fallback model."""
     if self._fallback_index >= len(self._fallback_chain):
-        return False  # 无更多 fallback
+        return False  # No more fallback
     
     fallback = self._fallback_chain[self._fallback_index]
     self._fallback_index += 1
     
-    # 切换模型/凭证
+    # Switch model/credential
     self.model = fallback["model"]
     self.provider = fallback["provider"]
-    # ... 重建客户端
+    # ... Rebuild client
     
     return True
 ```
 
-### 结构化错误分类（error_classifier.py）
+### Structured Error Classification (error_classifier.py)
 
-2026-04-09 引入的集中式错误分类器，替代了 `run_agent.py` 中分散的字符串匹配。所有 API 错误被分类为 13 种 `FailoverReason`，每种对应不同的恢复策略：
+A centralized error classifier, introduced on 2026-04-09, replaces the scattered string matching in `run_agent.py`. All API errors are categorized into 13 `FailoverReason` types, each corresponding to a different recovery strategy:
 
-| 错误类型 | 恢复策略 |
-|---------|---------|
-| `auth` | 刷新/轮换凭证 |
-| `billing` | 立即切换 Provider |
-| `rate_limit` | 退避等待后轮换 |
-| `context_overflow` | 压缩上下文 |
-| `payload_too_large` | 压缩 payload |
-| `timeout` | 重建客户端 + 重试 |
-| `model_not_found` | fallback 到其他模型 |
-| `server_error` / `overloaded` | 重试 / 退避 |
-| `thinking_signature` | Anthropic thinking block 签名无效 |
-| `long_context_tier` | 降级到 200K 标准层级 |
+| Error Type | Recovery Strategy |
+|---|---|
+| `auth` | Refresh/rotate credentials |
+| `billing` | Switch Provider immediately |
+| `rate_limit` | Backoff and wait, then rotate |
+| `context_overflow` | Compress context |
+| `payload_too_large` | Compress payload |
+| `timeout` | Rebuild client + retry |
+| `model_not_found` | Fallback to other models |
+| `server_error` / `overloaded` | Retry / Backoff |
+| `thinking_signature` | Invalid Anthropic thinking block signature |
+| `long_context_tier` | Downgrade to 200K standard tier |
 
-分类结果是结构化的 `ClassifiedError`，包含恢复提示：
+The classification result is a structured `ClassifiedError`, containing recovery hints:
 
 ```python
 @dataclass
@@ -231,15 +231,15 @@ class ClassifiedError:
     should_fallback: bool = False
 ```
 
-重试循环直接读取这些字段决策，不再重复解析错误消息。
+The retry loop directly reads these field decisions, eliminating redundant error message parsing.
 
-### 连接健康检查
+### Connection Health Check
 
 ```python
 def _cleanup_dead_connections(self) -> bool:
-    """检测并清理来自提供商故障的死 TCP 连接"""
+    """Detects and cleans up dead TCP connections resulting from provider failures."""
     
-    # 检查共享连接池中的死连接
+    # Check for dead connections in the shared connection pool
     cleaned = 0
     for conn in self._connection_pool:
         if not conn.is_healthy():
@@ -248,7 +248,7 @@ def _cleanup_dead_connections(self) -> bool:
     
     return cleaned > 0
 
-# 在每轮对话开始前检查
+# Check before each conversation turn
 if self.api_mode != "anthropic_messages":
     try:
         if self._cleanup_dead_connections():
@@ -260,11 +260,11 @@ if self.api_mode != "anthropic_messages":
         pass
 ```
 
-### 凭证自动刷新
+### Automatic Credential Refresh
 
 ```python
 def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
-    """刷新 Nous Portal 凭证"""
+    """Refreshes Nous Portal credentials."""
     try:
         creds = resolve_nous_runtime_credentials(
             min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
@@ -287,7 +287,7 @@ def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
     return self._replace_primary_openai_client(reason="nous_credential_refresh")
 
 def _try_refresh_anthropic_client_credentials(self) -> bool:
-    """刷新 Anthropic 凭证（OAuth token 轮换）"""
+    """Refreshes Anthropic credentials (OAuth token rotation)."""
     if self.api_mode != "anthropic_messages" or self.provider != "anthropic":
         return False
     
@@ -299,33 +299,33 @@ def _try_refresh_anthropic_client_credentials(self) -> bool:
     if not isinstance(new_token, str) or not new_token.strip():
         return False
     if new_token == self._anthropic_api_key:
-        return False  # 无变化
+        return False  # No change
     
     self._anthropic_client.close()
     self._anthropic_client = build_anthropic_client(new_token, self._anthropic_base_url)
     self._anthropic_api_key = new_token
     
-    # 更新 OAuth 标志 — token 类型可能已更改
+    # Update OAuth flag — token type may have changed
     self._is_anthropic_oauth = _is_oauth_token(new_token)
     return True
 ```
 
-## 活动跟踪
+## Activity Tracking
 
 ```python
-# 用于网关超时处理器和"仍在工作"通知
+# Used for Gateway timeout handler and "still working" notifications
 self._last_activity_ts: float = time.time()
 self._last_activity_desc: str = "initializing"
 self._current_tool: str | None = None
 self._api_call_count: int = 0
 
 def _touch_activity(self, description: str):
-    """更新活动时间戳"""
+    """Updates the activity timestamp."""
     self._last_activity_ts = time.time()
     self._last_activity_desc = description
 
 def get_status(self) -> dict:
-    """获取当前状态（用于超时检测）"""
+    """Gets the current status (for timeout detection)."""
     elapsed = time.time() - self._last_activity_ts
     return {
         "last_activity_ts": self._last_activity_ts,
@@ -338,9 +338,9 @@ def get_status(self) -> dict:
     }
 ```
 
-## Gateway 重启后自动续跑（2026-04-14）
+## Automatic Resumption After Gateway Restart (2026-04-14)
 
-Gateway 进程在 agent 调用工具**之后、生成最终回复之前**被重启(SIGTERM、崩溃、`drain_timeout`),session transcript 会停在一条 `role: "tool"` 上——之前的做法是用户必须手动 `/retry`(从头回放,丢失所有进度)或说 "continue"。现在当下一条用户消息到达时,Gateway 检测到历史尾部是 tool result,自动注入一条 system note:
+If the Gateway process is restarted (SIGTERM, crash, `drain_timeout`) **after** the agent calls a tool but **before** it generates a final reply, the session transcript will end with a `role: "tool"` message. Previously, users had to manually `/retry` (replaying the conversation from scratch, losing all progress) or say "continue". Now, when the next user message arrives, the Gateway detects that the history ends with a tool result and automatically injects a system note:
 
 ```
 [System note: Your previous turn was interrupted before you could process the
@@ -348,10 +348,10 @@ last tool result(s). The conversation history contains tool outputs you haven't
 responded to yet. Please finish processing those results and summarize what was
 accomplished, then address the user's new message below.]
 
-<用户的新消息原文>
+<Original User Message>
 ```
 
-### 实现(`gateway/run.py:8679-8692`)
+### Implementation (`gateway/run.py:8679-8692`)
 
 ```python
 # Auto-continue: if the loaded history ends with a tool result,
@@ -360,76 +360,76 @@ if agent_history and agent_history[-1].get("role") == "tool":
     message = SYSTEM_NOTE + "\n\n" + message
 ```
 
-注入点在 `_run_agent()` 的 run_sync closure 里,**紧挨** `agent.run_conversation()` 之前。Agent 看到的是完整历史(含未处理的 tool results)加这条 system note,然后继续运行——所以它先总结之前的工作,再处理用户的新消息。
+The injection point is within the `_run_agent()`'s `run_sync` closure, **immediately before** `agent.run_conversation()`. The Agent sees the complete history (including unprocessed tool results) plus this system note, and then continues execution — so it first summarizes previous work before addressing the user's new message.
 
-### 设计关键点
+### Key Design Points
 
-| 设计决策 | 说明 |
+| Design Decision | Explanation |
 |---|---|
-| **无 schema 变更** | 不新增 session flags 或持久化字段,纯粹检测尾部消息角色 |
-| **适用所有重启场景** | Clean shutdown / crash / SIGTERM / drain timeout 都覆盖 |
-| **保留用户消息** | 用户原始消息仍然在 system note 之后,不会丢 |
-| **suspended session 不触发** | 如果 session 是 suspended 状态(非正常关闭),历史被丢弃,用户从空白开始,避免误 auto-continue 过时内容 |
-| **关机通知改文案** | 关机时发出去的通知从 "Use /retry after restart to continue" 改成 "Send any message after restart to resume where it left off"——现在这才是准确的 |
+| **No schema change** | No new session flags or persistent fields are added; it purely detects the role of the last message |
+| **Applies to all restart scenarios** | Covers clean shutdown / crash / SIGTERM / drain timeout |
+| **Preserves user message** | The original user message remains after the system note and is not lost |
+| **Suspended sessions not triggered** | If a session is in a suspended state (abnormal shutdown), history is discarded, and the user starts from a blank slate, preventing erroneous auto-continuation of outdated content |
+| **Shutdown notification copy changed** | The notification sent during shutdown changes from "Use /retry after restart to continue" to "Send any message after restart to resume where it left off" — this is now accurate |
 
-### 对比旧行为
+### Comparison with Old Behavior
 
 ```text
-旧流程(手动 /retry):
-  用户: "deploy v2.3"
+Old Flow (Manual /retry):
+  User: "deploy v2.3"
   agent: [calls terminal "kubectl apply"] → [tool result: "deployment started"]
-  [Gateway 崩溃/重启]
-  用户: "did it work?"
-  → 用户必须手动输入 /retry 回放对话 → agent 从头跑 kubectl apply(可能重复部署!)
+  [Gateway Crash/Restart]
+  User: "did it work?"
+  → User must manually type /retry to replay conversation → agent runs kubectl apply from scratch (potentially double deploying!)
 
-新流程(auto-continue):
-  用户: "deploy v2.3"
+New Flow (Auto-continue):
+  User: "deploy v2.3"
   agent: [calls terminal "kubectl apply"] → [tool result: "deployment started"]
-  [Gateway 崩溃/重启]
-  用户: "did it work?"
-  → Gateway 检测到尾部是 tool → 注入 system note → agent 看到 tool result + 用户新消息
-  → agent: "部署已启动(kubectl apply 成功).关于你的问题..."
+  [Gateway Crash/Restart]
+  User: "did it work?"
+  → Gateway detects trailing tool result → injects system note → agent sees tool result + new user message
+  → agent: "Deployment started (kubectl apply successful). Regarding your question..."
 ```
 
-**关键安全性**:旧流程的 `/retry` 会重放副作用(再跑一遍 kubectl apply);新流程只是让 agent 解读**已发生的** tool result,不会重复执行。
+**Key Safety Aspect**: The old flow's `/retry` would replay side effects (running kubectl apply again); the new flow merely allows the agent to interpret **already occurred** tool results without re-executing them.
 
-## 优越性分析
+## Superiority Analysis
 
-### 与其他 Agent 框架对比
+### Comparison with Other Agent Frameworks
 
-| 特性 | Hermes | Cursor | OpenCode |
-|------|--------|--------|----------|
-| 用户中断 | ✅ Ctrl+C/新消息 | ✅ | ✅ |
-| 子代理中断传播 | ✅ | N/A | N/A |
-| 凭证池轮换 | ✅ 多密钥自动轮换 | ❌ | ❌ |
-| Fallback 模型链 | ✅ 自动切换 | ❌ | ❌ |
-| 连接健康检查 | ✅ 自动清理 | ❌ | ❌ |
-| 凭证自动刷新 | ✅ OAuth/token | ❌ | ❌ |
-| 活动跟踪 | ✅ 超时检测 | ❌ | ❌ |
+| Feature | Hermes | Cursor | OpenCode |
+|---|---|---|---|
+| User Interrupt | ✅ Ctrl+C/New Message | ✅ | ✅ |
+| Sub-agent Interrupt Propagation | ✅ | N/A | N/A |
+| Credential Pool Rotation | ✅ Automatic multi-key rotation | ❌ | ❌ |
+| Fallback Model Chain | ✅ Automatic switching | ❌ | ❌ |
+| Connection Health Check | ✅ Automatic cleanup | ❌ | ❌ |
+| Automatic Credential Refresh | ✅ OAuth/token | ❌ | ❌ |
+| Activity Tracking | ✅ Timeout detection | ❌ | ❌ |
 
-## 配置指南
+## Configuration Guide
 
-### 环境变量
+### Environment Variables
 
 ```bash
-# Nous 凭证刷新
-HERMES_NOUS_MIN_KEY_TTL_SECONDS=1800  # 最小密钥 TTL
-HERMES_NOUS_TIMEOUT_SECONDS=15        # 刷新超时
+# Nous Credential Refresh
+HERMES_NOUS_MIN_KEY_TTL_SECONDS=1800  # Minimum Key TTL
+HERMES_NOUS_TIMEOUT_SECONDS=15        # Refresh Timeout
 
-# 流式读取超时
-HERMES_STREAM_READ_TIMEOUT=60.0       # 流式读取超时（秒）
-HERMES_API_TIMEOUT=1800.0             # API 总超时（秒）
+# Streaming Read Timeout
+HERMES_STREAM_READ_TIMEOUT=60.0       # Streaming read timeout (seconds)
+HERMES_API_TIMEOUT=1800.0             # API total timeout (seconds)
 ```
 
-## 相关页面
+## Related Pages
 
-- [[credential-pool-and-isolation]] — 凭证池与轮换机制
-- [[multi-agent-architecture]] — 子代理中断传播与预算隔离
-- [[agent-loop-and-prompt-assembly]] — AIAgent 中断标志与主循环
+- [[credential-pool-and-isolation]] — Credential Pool and Rotation Mechanism
+- [[multi-agent-architecture]] — Sub-agent Interrupt Propagation and Budget Isolation
+- [[agent-loop-and-prompt-assembly]] — AIAgent Interrupt Flag and Main Loop
 
-### 相关文件
+### Related Files
 
-- `agent/error_classifier.py` — 结构化 API 错误分类（13 种 FailoverReason）
-- `run_agent.py` — 中断机制、重试循环
-- `tools/credential_pool.py` — 凭证池
-- `tools/interrupt.py` — 中断工具
+- `agent/error_classifier.py` — Structured API Error Classification (13 FailoverReason types)
+- `run_agent.py` — Interrupt Mechanism, Retry Loop
+- `tools/credential_pool.py` — Credential Pool
+- `tools/interrupt.py` — Interrupt Tool

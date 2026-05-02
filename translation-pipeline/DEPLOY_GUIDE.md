@@ -6,25 +6,25 @@ Step-by-step guide to deploy the Hermes Wiki translation pipeline to Google Clou
 
 ### Required Software
 
-- **gcloud CLI** - Google Cloud command-line tool
-- **Terraform** - Infrastructure as Code tool
-- **Docker** - Container runtime
-- **git** - Version control
-- **Python 3.8+** - Python runtime
-- **curl** - HTTP client
+-   **gcloud CLI** - Google Cloud command-line tool
+-   **Terraform** - Infrastructure as Code tool
+-   **Docker** - Container runtime
+-   **git** - Version control
+-   **Python 3.8+** - Python runtime
+-   **curl** - HTTP client
 
 ### Accounts & Keys
 
-1. **Google Cloud Account** with billing enabled
-   - Create: https://console.cloud.google.com
-   - Enable billing: Cloud Console → Billing
+1.  **Google Cloud Account** with billing enabled
+    -   Create: https://console.cloud.google.com
+    -   Enable billing: Cloud Console → Billing
 
-2. **Claude API Key** from Anthropic
-   - Get key: https://console.anthropic.com
-   - Format: `sk-ant-...`
+2.  **Claude API Key** from Anthropic
+    -   Get key: https://console.anthropic.com
+    -   Format: `sk-ant-...`
 
-3. **GitHub Access** (optional, for repo translation)
-   - Personal access token: https://github.com/settings/tokens
+3.  **GitHub Access** (optional, for repo translation)
+    -   Personal access token: https://github.com/settings/tokens
 
 ---
 
@@ -139,13 +139,13 @@ chmod +x deploy.sh
 ```
 
 The script will guide you through:
-1. ✅ Prerequisites check
-2. ✅ GCP authentication
-3. ✅ Configuration setup
-4. ✅ Terraform provisioning
-5. ✅ Docker build & push
-6. ✅ Cloud Run deployment
-7. ✅ Service testing
+1.  ✅ Prerequisites check
+2.  ✅ GCP authentication
+3.  ✅ Configuration setup
+4.  ✅ Terraform provisioning
+5.  ✅ Docker build & push
+6.  ✅ Cloud Run deployment
+7.  ✅ Service testing
 
 ### Option B: Manual Step-by-Step
 
@@ -273,7 +273,7 @@ curl -H "Authorization: Bearer $TOKEN" $SERVICE_URL/status
 # 3. Test translation
 curl -X POST $SERVICE_URL/translate \
   -H "Content-Type: application/json" \
-  -d '{"content": "# 标题\n这是测试", "filename": "test.md"}'
+  -d '{"content": "# Title\nThis is a test", "filename": "test.md"}'
 ```
 
 ### View Logs
@@ -365,13 +365,13 @@ gcloud run services describe hermes-wiki-translator
 
 ### Cost Estimation
 
-| Component | Monthly Cost |
-|-----------|-------------|
-| Cloud Run (10 daily translations) | $0.50 |
-| Cloud Storage (500MB) | $0.10 |
-| Cloud Build (2 builds) | $0.50 |
-| Claude API (42 translations) | $50-100 |
-| **Total** | **$51-101** |
+| Component                   | Monthly Cost |
+| :-------------------------- | :----------- |
+| Cloud Run (10 daily translations) | $0.50        |
+| Cloud Storage (500MB)       | $0.10        |
+| Cloud Build (2 builds)      | $0.50        |
+| Claude API (42 translations) | $50-100      |
+| **Total**                   | **$51-101**  |
 
 ### Cost Optimization
 
@@ -527,8 +527,8 @@ gcloud run services update hermes-wiki-translator \
 
 ## Support & Resources
 
-- 📚 [API Reference](API.md)
-- 🚀 [Quick Start](README.md)
-- 🐛 [GitHub Issues](https://github.com/scapedotes/Hermes-Wiki/issues)
-- ☁️ [GCP Documentation](https://cloud.google.com/run/docs)
-- 🤖 [Claude API Docs](https://docs.anthropic.com)
+-   📚 [API Reference](API.md)
+-   🚀 [Quick Start](README.md)
+-   🐛 [GitHub Issues](https://github.com/scapedotes/Hermes-Wiki/issues)
+-   ☁️ [GCP Documentation](https://cloud.google.com/run/docs)
+-   🤖 [Claude API Docs](https://docs.anthropic.com)
